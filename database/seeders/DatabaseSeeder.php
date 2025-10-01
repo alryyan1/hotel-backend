@@ -47,5 +47,57 @@ class DatabaseSeeder extends Seeder
                 ['created_at' => now(), 'updated_at' => now()]
             );
         }
+
+        // Seed basic room types
+        DB::table('room_types')->insertOrIgnore([
+            [
+                'code' => 'SGL',
+                'name' => 'Single',
+                'capacity' => 1,
+                'base_price' => 150.00,
+                'description' => 'غرفة مفردة مناسبة لنزيل واحد',
+                'area' => 18,
+                'beds_count' => 1,
+                'amenities' => json_encode(['تكييف', 'واي فاي', 'تلفاز']),
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+            [
+                'code' => 'DBL',
+                'name' => 'Double',
+                'capacity' => 2,
+                'base_price' => 220.00,
+                'description' => 'غرفة مزدوجة لشخصين',
+                'area' => 24,
+                'beds_count' => 1,
+                'amenities' => json_encode(['تكييف', 'واي فاي', 'ثلاجة صغيرة', 'تلفاز']),
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+            [
+                'code' => 'STE',
+                'name' => 'Suite',
+                'capacity' => 3,
+                'base_price' => 400.00,
+                'description' => 'جناح واسع مع غرفة معيشة',
+                'area' => 45,
+                'beds_count' => 2,
+                'amenities' => json_encode(['تكييف', 'واي فاي', 'ثلاجة', 'شرفة', 'منطقة جلوس']),
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+            [
+                'code' => 'DLX',
+                'name' => 'VIP / Deluxe',
+                'capacity' => 2,
+                'base_price' => 550.00,
+                'description' => 'غرفة ديلوكس فاخرة',
+                'area' => 35,
+                'beds_count' => 1,
+                'amenities' => json_encode(['تكييف', 'واي فاي', 'شرفة', 'آلة قهوة', 'ميني بار']),
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+        ]);
     }
 }

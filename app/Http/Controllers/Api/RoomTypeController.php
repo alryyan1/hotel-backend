@@ -31,6 +31,10 @@ class RoomTypeController extends Controller
                 'capacity' => 'required|integer|min:1|max:10',
                 'base_price' => 'required|numeric|min:0',
                 'description' => 'nullable|string|max:1000',
+                'area' => 'nullable|integer|min:0|max:1000',
+                'beds_count' => 'nullable|integer|min:1|max:10',
+                'amenities' => 'nullable|array',
+                'amenities.*' => 'string|max:100',
             ]);
 
             $roomType = RoomType::create($validated);
@@ -66,6 +70,10 @@ class RoomTypeController extends Controller
                 'capacity' => 'required|integer|min:1|max:10',
                 'base_price' => 'required|numeric|min:0',
                 'description' => 'nullable|string|max:1000',
+                'area' => 'nullable|integer|min:0|max:1000',
+                'beds_count' => 'nullable|integer|min:1|max:10',
+                'amenities' => 'nullable|array',
+                'amenities.*' => 'string|max:100',
             ]);
 
             $roomType->update($validated);

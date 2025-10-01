@@ -13,6 +13,13 @@ class RoomType extends Model
         'capacity',
         'base_price',
         'description',
+        'area',
+        'beds_count',
+        'amenities',
+    ];
+
+    protected $casts = [
+        'amenities' => 'array',
     ];
 
     public function rooms(): HasMany

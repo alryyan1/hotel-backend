@@ -17,6 +17,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::apiResource('room-statuses', \App\Http\Controllers\Api\RoomStatusController::class);
     Route::apiResource('rooms', \App\Http\Controllers\Api\RoomController::class);
     Route::apiResource('reservations', \App\Http\Controllers\Api\ReservationController::class);
+    Route::apiResource('customers', \App\Http\Controllers\Api\CustomerController::class);
 
     // Availability
     Route::get('availability', [\App\Http\Controllers\Api\AvailabilityController::class, 'search']);
