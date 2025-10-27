@@ -26,7 +26,6 @@ class ReservationController extends Controller
     public function store(Request $request)
     {
         $data = $request->validate([
-            'code' => ['required','string','max:50','unique:reservations,code'],
             'customer_id' => ['required','exists:customers,id'],
             'check_in_date' => ['required','date'],
             'check_out_date' => ['required','date','after:check_in_date'],
@@ -67,7 +66,6 @@ class ReservationController extends Controller
         }
 
         $reservation = Reservation::create([
-            'code' => $data['code'],
             'customer_id' => $data['customer_id'],
             'check_in_date' => $data['check_in_date'],
             'check_out_date' => $data['check_out_date'],
@@ -76,11 +74,11 @@ class ReservationController extends Controller
             'notes' => $data['notes'] ?? null,
         ]);
 
-        $syncData = collect($data['rooms'])->mapWithKeys(function ($room) {
+        $syncData = collect($data['rooms'])->mapWithKeys(function ($room) use ($data) {
             return [
                 $room['id'] => [
-                    'check_in_date' => $room['check_in_date'] ?? null,
-                    'check_out_date' => $room['check_out_date'] ?? null,
+                    'check_in_date' => $room['check_in_date'] ?? $data['check_in_date'],
+                    'check_out_date' => $room['check_out_date'] ?? $data['check_out_date'],
                     'rate' => $room['rate'] ?? null,
                     'currency' => $room['currency'] ?? 'USD',
                 ],
@@ -106,7 +104,6 @@ class ReservationController extends Controller
     public function update(Request $request, Reservation $reservation)
     {
         $data = $request->validate([
-            'code' => ['sometimes','string','max:50', Rule::unique('reservations','code')->ignore($reservation->id)],
             'customer_id' => ['sometimes','exists:customers,id'],
             'check_in_date' => ['sometimes','date'],
             'check_out_date' => ['sometimes','date','after:check_in_date'],
@@ -155,11 +152,13 @@ class ReservationController extends Controller
         $reservation->update($data);
 
         if (isset($data['rooms'])) {
-            $syncData = collect($data['rooms'])->mapWithKeys(function ($room) {
+            $syncData = collect($data['rooms'])->mapWithKeys(function ($room) use ($data, $reservation) {
+                $ciBase = $data['check_in_date'] ?? $reservation->check_in_date;
+                $coBase = $data['check_out_date'] ?? $reservation->check_out_date;
                 return [
                     $room['id'] => [
-                        'check_in_date' => $room['check_in_date'] ?? null,
-                        'check_out_date' => $room['check_out_date'] ?? null,
+                        'check_in_date' => $room['check_in_date'] ?? $ciBase,
+                        'check_out_date' => $room['check_out_date'] ?? $coBase,
                         'rate' => $room['rate'] ?? null,
                         'currency' => $room['currency'] ?? 'USD',
                     ],
