@@ -5,9 +5,11 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Reservation;
 use App\Models\Room;
+use App\Services\ReservationSmsService;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class ReservationController extends Controller
 {
@@ -16,7 +18,7 @@ class ReservationController extends Controller
      */
     public function index()
     {
-        $reservations = Reservation::with(['customer', 'rooms', 'payments'])->paginate(20);
+        $reservations = Reservation::with(['customer', 'rooms', 'payments'])->orderBy('id', 'desc')->paginate(20);
         return response()->json($reservations);
     }
 
@@ -87,7 +89,33 @@ class ReservationController extends Controller
 
         $reservation->rooms()->sync($syncData);
 
-        return response()->json($reservation->load(['customer','rooms','payments']), 201);
+        // Send SMS notification
+        $smsResult = null;
+        try {
+            $smsService = app(ReservationSmsService::class);
+            $smsResult = $smsService->sendReservationConfirmation($reservation);
+            
+            if (!$smsResult['success']) {
+                Log::warning('Failed to send reservation SMS', [
+                    'reservation_id' => $reservation->id,
+                    'error' => $smsResult['error'] ?? 'Unknown error'
+                ]);
+            }
+        } catch (\Exception $e) {
+            Log::error('SMS service error', [
+                'reservation_id' => $reservation->id,
+                'error' => $e->getMessage()
+            ]);
+            $smsResult = [
+                'success' => false,
+                'error' => $e->getMessage()
+            ];
+        }
+
+        $responseData = $reservation->load(['customer','rooms','payments']);
+        $responseData->sms_result = $smsResult;
+
+        return response()->json($responseData, 201);
     }
 
     /**
@@ -185,7 +213,34 @@ class ReservationController extends Controller
             return response()->json(['message' => 'Only pending reservations can be confirmed'], 422);
         }
         $reservation->update(['status' => 'confirmed']);
-        return response()->json($reservation);
+
+        // Send SMS notification for confirmation
+        $smsResult = null;
+        try {
+            $smsService = app(ReservationSmsService::class);
+            $smsResult = $smsService->sendReservationConfirmationSms($reservation);
+            
+            if (!$smsResult['success']) {
+                Log::warning('Failed to send reservation confirmation SMS', [
+                    'reservation_id' => $reservation->id,
+                    'error' => $smsResult['error'] ?? 'Unknown error'
+                ]);
+            }
+        } catch (\Exception $e) {
+            Log::error('SMS service error during confirmation', [
+                'reservation_id' => $reservation->id,
+                'error' => $e->getMessage()
+            ]);
+            $smsResult = [
+                'success' => false,
+                'error' => $e->getMessage()
+            ];
+        }
+
+        $responseData = $reservation;
+        $responseData->sms_result = $smsResult;
+
+        return response()->json($responseData);
     }
 
     public function checkIn(Reservation $reservation)

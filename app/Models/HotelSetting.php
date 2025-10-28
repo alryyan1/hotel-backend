@@ -17,8 +17,6 @@ class HotelSetting extends Model
         'phone',
         'email',
         'website',
-        'check_in_time',
-        'check_out_time',
         'cancellation_policy',
     ];
 }

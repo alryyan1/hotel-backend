@@ -27,8 +27,6 @@ class HotelSettingController extends Controller
             'phone' => ['nullable','string','max:50'],
             'email' => ['nullable','email','max:255'],
             'website' => ['nullable','url','max:255'],
-            'check_in_time' => ['nullable'],
-            'check_out_time' => ['nullable'],
             'cancellation_policy' => ['nullable','string'],
             'logo' => ['nullable','image','max:2048'],
         ]);
