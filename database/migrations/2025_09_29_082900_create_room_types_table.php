@@ -16,7 +16,7 @@ return new class extends Migration
             $table->string('code')->unique();
             $table->string('name');
             $table->unsignedTinyInteger('capacity')->default(1);
-            $table->decimal('base_price', 10, 2)->default(0);
+            $table->integer('base_price')->default(0);
             $table->text('description')->nullable();
             $table->timestamps();
         });

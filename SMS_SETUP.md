@@ -50,3 +50,5 @@ To test the SMS functionality:
 2. Create a reservation with a customer that has a phone number
 3. Check the Laravel logs for SMS success/failure messages
 4. Verify the SMS is received on the customer's phone
+
+
