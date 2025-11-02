@@ -32,4 +32,14 @@ Route::middleware('auth:sanctum')->group(function () {
     // Hotel settings
     Route::get('settings/hotel', [\App\Http\Controllers\Api\HotelSettingController::class, 'show']);
     Route::post('settings/hotel', [\App\Http\Controllers\Api\HotelSettingController::class, 'update']);
+
+    // Payments
+    Route::apiResource('payments', \App\Http\Controllers\Api\PaymentController::class);
+    Route::get('customers/{customer}/payments', [\App\Http\Controllers\Api\PaymentController::class, 'getCustomerPayments']);
+
+    // Customer PDF Export
+    Route::get('customers/{customer}/ledger/pdf', [\App\Http\Controllers\Api\CustomerController::class, 'exportLedgerPdf']);
+
+    // Costs
+    Route::apiResource('costs', \App\Http\Controllers\Api\CostController::class);
 });

@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 class Payment extends Model
 {
     protected $fillable = [
+        'customer_id',
         'reservation_id',
         'reference',
         'method',
@@ -16,6 +17,11 @@ class Payment extends Model
         'status',
         'notes',
     ];
+
+    public function customer(): BelongsTo
+    {
+        return $this->belongsTo(Customer::class);
+    }
 
     public function reservation(): BelongsTo
     {
