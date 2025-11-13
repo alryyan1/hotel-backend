@@ -16,12 +16,12 @@ class UltramsgService
 
     public function __construct()
     {
-        $appSettings = Setting::first();
+        // $appSettings = Setting::first();
         
-        $this->baseUrl = $appSettings?->ultramsg_base_url ?? 'https://api.ultramsg.com';
-        $this->instanceId = $appSettings?->ultramsg_instance_id;
-        $this->token = $appSettings?->ultramsg_token;
-        $this->defaultCountryCode = $appSettings?->ultramsg_default_country_code ?? '249';
+        $this->baseUrl =  'https://api.ultramsg.com';
+        $this->instanceId = 'instance145504';
+        $this->token = 'mh3flw9ka6wm8dkw';
+        $this->defaultCountryCode = '249';
     }
 
     /**

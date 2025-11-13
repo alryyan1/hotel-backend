@@ -20,3 +20,4 @@ class Cost extends Model
     ];
 }
 
+

@@ -9,6 +9,7 @@ use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Response;
 use Illuminate\Validation\ValidationException;
+use Illuminate\Support\Facades\Log;
 
 class CustomerController extends Controller
 {
@@ -78,7 +79,7 @@ class CustomerController extends Controller
         // Calculate ledger entries
         $ledgerEntries = $this->calculateLedger($customer->reservations, $customer->payments, $roomTypes);
 
-        // Create PDF
+        // Create PDF with RTL support
         $pdf = new \TCPDF('P', 'mm', 'A4', true, 'UTF-8', false);
         $pdf->SetCreator('Hotel Management System');
         $pdf->SetAuthor('Hotel Management System');
@@ -89,25 +90,85 @@ class CustomerController extends Controller
         $pdf->setPrintHeader(false);
         $pdf->setPrintFooter(false);
 
-        // Set margins
-        $pdf->SetMargins(15, 15, 15);
-        $pdf->SetAutoPageBreak(true, 15);
+        // Set margins (15mm on each side)
+        $leftMargin = 15;
+        $rightMargin = 15;
+        $topMargin = 15;
+        $bottomMargin = 15;
+        $pdf->SetMargins($leftMargin, $topMargin, $rightMargin);
+        $pdf->SetAutoPageBreak(true, $bottomMargin);
+
+        // Page dimensions (A4)
+        $pageWidth = 210; // A4 width in mm
+        $pageHeight = 297; // A4 height in mm
+
+        // Set RTL direction
+        $pdf->setRTL(true);
 
         // Add a page
         $pdf->AddPage();
 
-        // Set font for Arabic text
-        $pdf->SetFont('dejavusans', '', 10);
+        // Add header image
+        $headerImagePath = storage_path('app/public/images/header.png');
+        if (file_exists($headerImagePath)) {
+            try {
+                // Get image dimensions
+                $imageInfo = @getimagesize($headerImagePath);
+                if ($imageInfo !== false) {
+                    // Set maximum width for header (80% of page width)
+                    $maxHeaderWidth = $pageWidth * 0.8;
+                    
+                    // Calculate height maintaining aspect ratio
+                    $aspectRatio = $imageInfo[1] / $imageInfo[0];
+                    $headerWidthMM = $maxHeaderWidth;
+                    $headerHeightMM = $headerWidthMM * $aspectRatio;
+                    
+                    // Temporarily disable RTL for image positioning (easier to calculate)
+                    $pdf->setRTL(false);
+                    
+                    // Position at top center (simple center calculation)
+                    $xPos = ($pageWidth - $headerWidthMM) / 2;
+                    $yPos = $topMargin;
+                    
+                    $pdf->Image($headerImagePath, $xPos, $yPos, $headerWidthMM, $headerHeightMM, 'PNG', '', '', false, 300, '', false, false, 0, false, false, false);
+                    
+                    // Re-enable RTL
+                    $pdf->setRTL(true);
+                    
+                    // Move Y position down after header
+                    $pdf->SetY($yPos + $headerHeightMM + 5);
+                }
+            } catch (\Exception $e) {
+                // Silently continue if image fails to load
+                Log::warning('Failed to load header image: ' . $e->getMessage());
+            }
+        }
+
+        // Calculate available width (A4 width = 210mm, minus margins)
+        $availableWidth = $pageWidth - $leftMargin - $rightMargin; // 180mm
+
+        // Define column widths (proportioned to fit available width)
+        $colDate = 22;      // التاريخ
+        $colDescription = 51; // الوصف
+        $colDetails = 34;    // الغرف / طريقة الدفع
+        $colDays = 17;       // الأيام
+        $colDebit = 17;      // مدين
+        $colCredit = 17;     // دائن
+        $colBalance = 22;    // الرصيد
+        // Total: 22+51+34+17+17+17+22 = 180mm
+
+        // Set font for Arabic text (Arial)
+        $pdf->SetFont('arial', '', 10);
 
         // Title
-        $pdf->SetFont('dejavusans', 'B', 18);
+        $pdf->SetFont('arial', 'B', 18);
         $pdf->Cell(0, 10, 'كشف حساب العميل', 0, 1, 'C');
         $pdf->Ln(5);
 
         // Customer Information
-        $pdf->SetFont('dejavusans', 'B', 12);
+        $pdf->SetFont('arial', 'B', 12);
         $pdf->Cell(0, 8, 'بيانات العميل', 0, 1, 'R');
-        $pdf->SetFont('dejavusans', '', 10);
+        $pdf->SetFont('arial', '', 10);
         
         $customerInfo = [
             'الاسم: ' . $customer->name,
@@ -122,19 +183,19 @@ class CustomerController extends Controller
         $pdf->Ln(5);
 
         // Ledger Table Header
-        $pdf->SetFont('dejavusans', 'B', 10);
+        $pdf->SetFont('arial', 'B', 10);
         $pdf->SetFillColor(230, 230, 230);
         
-        $pdf->Cell(25, 8, 'التاريخ', 1, 0, 'C', true);
-        $pdf->Cell(60, 8, 'الوصف', 1, 0, 'C', true);
-        $pdf->Cell(40, 8, 'الغرف / طريقة الدفع', 1, 0, 'C', true);
-        $pdf->Cell(20, 8, 'الأيام', 1, 0, 'C', true);
-        $pdf->Cell(20, 8, 'مدين', 1, 0, 'C', true);
-        $pdf->Cell(20, 8, 'دائن', 1, 0, 'C', true);
-        $pdf->Cell(25, 8, 'الرصيد', 1, 1, 'C', true);
+        $pdf->Cell($colBalance, 8, 'الرصيد', 1, 0, 'C', true);
+        $pdf->Cell($colCredit, 8, 'دائن', 1, 0, 'C', true);
+        $pdf->Cell($colDebit, 8, 'مدين', 1, 0, 'C', true);
+        $pdf->Cell($colDays, 8, 'الأيام', 1, 0, 'C', true);
+        $pdf->Cell($colDetails, 8, 'الغرف / طريقة الدفع', 1, 0, 'C', true);
+        $pdf->Cell($colDescription, 8, 'الوصف', 1, 0, 'C', true);
+        $pdf->Cell($colDate, 8, 'التاريخ', 1, 1, 'C', true);
 
         // Ledger Entries
-        $pdf->SetFont('dejavusans', '', 9);
+        $pdf->SetFont('arial', '', 9);
         $totalDebit = 0;
         $totalCredit = 0;
 
@@ -142,41 +203,86 @@ class CustomerController extends Controller
             $totalDebit += $entry['debit'];
             $totalCredit += $entry['credit'];
 
-            $pdf->Cell(25, 7, $entry['date'], 1, 0, 'C');
-            $pdf->Cell(60, 7, $entry['description'], 1, 0, 'R');
+            // RTL order: Balance, Credit, Debit, Days, Details, Description, Date
+            $balance = number_format($entry['balance'], 0, '.', ',');
+            $pdf->Cell($colBalance, 7, $balance, 1, 0, 'C');
+            
+            $credit = $entry['credit'] > 0 ? number_format($entry['credit'], 0, '.', ',') : '-';
+            $pdf->Cell($colCredit, 7, $credit, 1, 0, 'C');
+            
+            $debit = $entry['debit'] > 0 ? number_format($entry['debit'], 0, '.', ',') : '-';
+            $pdf->Cell($colDebit, 7, $debit, 1, 0, 'C');
+            
+            $days = $entry['days'] ?? '-';
+            $pdf->Cell($colDays, 7, $days, 1, 0, 'C');
             
             $details = $entry['type'] === 'reservation' 
                 ? ($entry['rooms'] ?? '')
                 : ($entry['paymentMethod'] ?? '');
-            $pdf->Cell(40, 7, $details, 1, 0, 'C');
+            $pdf->Cell($colDetails, 7, $details, 1, 0, 'C');
             
-            $days = $entry['days'] ?? '-';
-            $pdf->Cell(20, 7, $days, 1, 0, 'C');
+            $pdf->Cell($colDescription, 7, $entry['description'], 1, 0, 'R');
             
-            $debit = $entry['debit'] > 0 ? number_format($entry['debit'], 0, '.', ',') : '-';
-            $pdf->Cell(20, 7, $debit, 1, 0, 'C');
-            
-            $credit = $entry['credit'] > 0 ? number_format($entry['credit'], 0, '.', ',') : '-';
-            $pdf->Cell(20, 7, $credit, 1, 0, 'C');
-            
-            $balance = number_format($entry['balance'], 0, '.', ',');
-            $pdf->Cell(25, 7, $balance, 1, 1, 'C');
+            $pdf->Cell($colDate, 7, $entry['date'], 1, 1, 'C');
         }
 
-        // Totals Row
-        $pdf->SetFont('dejavusans', 'B', 10);
+        // Totals Row (RTL order)
+        $pdf->SetFont('arial', 'B', 10);
         $pdf->SetFillColor(240, 240, 240);
-        $pdf->Cell(145, 8, 'الإجمالي', 1, 0, 'C', true);
-        $pdf->Cell(20, 8, number_format($totalDebit, 0, '.', ','), 1, 0, 'C', true);
-        $pdf->Cell(20, 8, number_format($totalCredit, 0, '.', ','), 1, 0, 'C', true);
+        $totalColSpan = $colDate + $colDescription + $colDetails + $colDays; // 22+51+34+17 = 124
         $finalBalance = $totalDebit - $totalCredit;
-        $pdf->Cell(25, 8, number_format($finalBalance, 0, '.', ','), 1, 1, 'C', true);
+        
+        $pdf->Cell($colBalance, 8, number_format($finalBalance, 0, '.', ','), 1, 0, 'C', true);
+        $pdf->Cell($colCredit, 8, number_format($totalCredit, 0, '.', ','), 1, 0, 'C', true);
+        $pdf->Cell($colDebit, 8, number_format($totalDebit, 0, '.', ','), 1, 0, 'C', true);
+        $pdf->Cell($totalColSpan, 8, 'الإجمالي', 1, 1, 'C', true);
 
         $pdf->Ln(5);
 
         // Final Balance
-        $pdf->SetFont('dejavusans', 'B', 12);
+        $pdf->SetFont('arial', 'B', 12);
         $pdf->Cell(0, 8, 'الرصيد النهائي: ' . number_format($finalBalance, 0, '.', ','), 0, 1, 'R');
+
+        // Add footer image at the bottom
+        $footerImagePath = storage_path('app/public/images/footer.png');
+        if (file_exists($footerImagePath)) {
+            try {
+                // Get image dimensions
+                $imageInfo = @getimagesize($footerImagePath);
+                if ($imageInfo !== false) {
+                    // Set maximum width for footer (80% of page width)
+                    $maxFooterWidth = $pageWidth * 0.9;
+                    
+                    // Calculate height maintaining aspect ratio
+                    $aspectRatio = $imageInfo[1] / $imageInfo[0];
+                    $footerWidthMM = $maxFooterWidth;
+                    $footerHeightMM = $footerWidthMM * $aspectRatio;
+                    
+                    // Get current Y position
+                    $currentY = $pdf->GetY();
+                    
+                    // Only add footer if there's enough space, otherwise add a new page
+                    if ($currentY + 10 + $footerHeightMM + $bottomMargin > $pageHeight - $bottomMargin) {
+                        $pdf->AddPage();
+                    }
+                    
+                    // Temporarily disable RTL for image positioning
+                    $pdf->setRTL(false);
+                    
+                    // Position footer at bottom center (simple center calculation)
+                    $xPos = ($pageWidth - $footerWidthMM) / 2;
+                    $yPos = $pageHeight - $footerHeightMM - $bottomMargin;
+                    
+                    $pdf->Image($footerImagePath, $xPos, $yPos, $footerWidthMM, $footerHeightMM, 'PNG', '', '', false, 300, '', false, false, 0, false, false, false);
+                    
+                    // Re-enable RTL
+                    $pdf->setRTL(true);
+                }
+            } catch (\Exception $e) {
+                // Silently continue if image fails to load
+                Log::warning('Failed to load footer image: ' . $e->getMessage());
+            }
+        }
 
         // Generate PDF and return as response
         $filename = 'customer_ledger_' . $customer->id . '_' . date('Y-m-d') . '.pdf';
