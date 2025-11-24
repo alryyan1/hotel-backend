@@ -19,15 +19,11 @@ class HotelSettingController extends Controller
     {
         $data = $request->validate([
             'official_name' => ['required','string','max:255'],
-            'trade_name' => ['nullable','string','max:255'],
             'address_line' => ['nullable','string','max:255'],
             'city' => ['nullable','string','max:100'],
-            'postal_code' => ['nullable','string','max:20'],
-            'country' => ['nullable','string','max:100'],
             'phone' => ['nullable','string','max:50'],
+            'phone_2' => ['nullable','string','max:50'],
             'email' => ['nullable','email','max:255'],
-            'website' => ['nullable','url','max:255'],
-            'cancellation_policy' => ['nullable','string'],
             'logo' => ['nullable','image','max:2048'],
         ]);
 

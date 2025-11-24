@@ -16,7 +16,30 @@ class RoomController extends Controller
     public function index(): JsonResponse
     {
         $rooms = Room::with(['floor', 'type', 'status'])->get();
-        return response()->json($rooms);
+        
+        // Group rooms by floor
+        $roomsByFloor = [];
+        foreach ($rooms as $room) {
+            $floorId = $room->floor_id ?? ($room->floor?->id ?? 'no-floor');
+            
+            if (!isset($roomsByFloor[$floorId])) {
+                $roomsByFloor[$floorId] = [
+                    'floor' => $room->floor ? [
+                        'id' => $room->floor->id,
+                        'number' => $room->floor->number,
+                        'name' => $room->floor->name,
+                    ] : null,
+                    'rooms' => []
+                ];
+            }
+            
+            $roomsByFloor[$floorId]['rooms'][] = $room;
+        }
+        
+        // Convert to array format for JSON response
+        $groupedRooms = array_values($roomsByFloor);
+        
+        return response()->json($groupedRooms);
     }
 
     /**

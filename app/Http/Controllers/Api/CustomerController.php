@@ -130,7 +130,7 @@ class CustomerController extends Controller
                     $xPos = ($pageWidth - $headerWidthMM) / 2;
                     $yPos = $topMargin;
                     
-                    $pdf->Image($headerImagePath, $xPos, $yPos, $headerWidthMM, $headerHeightMM, 'PNG', '', '', false, 300, '', false, false, 0, false, false, false);
+                    $pdf->Image($headerImagePath, $xPos - 10, $yPos , $headerWidthMM+20, $headerHeightMM, 'PNG', '', '', false, 300, '', false, false, 0, false, false, false);
                     
                     // Re-enable RTL
                     $pdf->setRTL(true);

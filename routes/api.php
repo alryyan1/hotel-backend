@@ -41,5 +41,9 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('customers/{customer}/ledger/pdf', [\App\Http\Controllers\Api\CustomerController::class, 'exportLedgerPdf']);
 
     // Costs
+    Route::get('costs/export/excel', [\App\Http\Controllers\Api\CostController::class, 'exportExcel']);
     Route::apiResource('costs', \App\Http\Controllers\Api\CostController::class);
+    
+    // Cost Categories
+    Route::apiResource('cost-categories', \App\Http\Controllers\Api\CostCategoryController::class);
 });
