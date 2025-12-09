@@ -46,4 +46,21 @@ Route::middleware('auth:sanctum')->group(function () {
     
     // Cost Categories
     Route::apiResource('cost-categories', \App\Http\Controllers\Api\CostCategoryController::class);
+    
+    // Inventory Categories (must come before inventory routes to avoid route conflicts)
+    Route::apiResource('inventory-categories', \App\Http\Controllers\Api\InventoryCategoryController::class);
+    Route::get('inventory/categories', [\App\Http\Controllers\Api\InventoryCategoryController::class, 'index']);
+    
+    // Inventory
+    Route::get('inventory/low-stock', [\App\Http\Controllers\Api\InventoryController::class, 'lowStock']);
+    Route::get('inventory/{inventory}/history', [\App\Http\Controllers\Api\InventoryController::class, 'history']);
+    Route::post('inventory/{inventory}/update-stock', [\App\Http\Controllers\Api\InventoryController::class, 'updateStock']);
+    Route::apiResource('inventory', \App\Http\Controllers\Api\InventoryController::class);
+    
+    // Inventory Orders
+    Route::post('inventory-orders/{inventoryOrder}/approve', [\App\Http\Controllers\Api\InventoryOrderController::class, 'approve']);
+    Route::apiResource('inventory-orders', \App\Http\Controllers\Api\InventoryOrderController::class);
+    
+    // Inventory Receipts (must come before inventory routes to avoid route conflicts)
+    Route::apiResource('inventory-receipts', \App\Http\Controllers\Api\InventoryReceiptController::class);
 });
