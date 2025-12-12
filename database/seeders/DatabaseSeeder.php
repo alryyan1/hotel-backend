@@ -3,6 +3,8 @@
 namespace Database\Seeders;
 
 use App\Models\User;
+use App\Models\Floor;
+use App\Models\Room;
 // use Illuminate\Database\Console\Seeds\WithoutModelEvents;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\DB;
@@ -17,8 +19,6 @@ class DatabaseSeeder extends Seeder
     {
         // Seed default room statuses
         DB::table('room_statuses')->insertOrIgnore([
-            ['code' => 'available', 'name' => 'Available', 'color' => '#22c55e', 'created_at' => now(), 'updated_at' => now()],
-            ['code' => 'occupied', 'name' => 'Occupied', 'color' => '#ef4444', 'created_at' => now(), 'updated_at' => now()],
             ['code' => 'cleaning', 'name' => 'Cleaning', 'color' => '#eab308', 'created_at' => now(), 'updated_at' => now()],
             ['code' => 'maintenance', 'name' => 'Maintenance', 'color' => '#3b82f6', 'created_at' => now(), 'updated_at' => now()],
         ]);
@@ -100,5 +100,53 @@ class DatabaseSeeder extends Seeder
                 'updated_at' => now(),
             ],
         ]);
+
+        // Seed floors and rooms
+        $this->seedFloorsAndRooms();
+    }
+
+    /**
+     * Seed floors and rooms
+     */
+    private function seedFloorsAndRooms(): void
+    {
+        // Get the first room type and room status for default assignment
+        $defaultRoomType = DB::table('room_types')->first();
+        $defaultRoomStatus = DB::table('room_statuses')->first();
+
+        if (!$defaultRoomType || !$defaultRoomStatus) {
+            throw new \Exception('Room types and room statuses must be seeded first');
+        }
+
+        // Create 4 floors
+        for ($floorNumber = 1; $floorNumber <= 4; $floorNumber++) {
+            $floor = Floor::updateOrCreate(
+                ['number' => $floorNumber],
+                [
+                    'name' => "الطابق {$floorNumber}",
+                    'description' => null,
+                ]
+            );
+
+            // Determine number of rooms for this floor
+            // Floors 1-3 have 2 rooms each, floor 4 has 1 room
+            $roomsPerFloor = ($floorNumber === 4) ? 1 : 2;
+
+            // Create rooms for this floor
+            for ($roomIndex = 1; $roomIndex <= $roomsPerFloor; $roomIndex++) {
+                $roomNumber = ($floorNumber * 100) + $roomIndex; // 101, 102, 201, 202, etc.
+
+                Room::updateOrCreate(
+                    ['number' => (string)$roomNumber],
+                    [
+                        'floor_id' => $floor->id,
+                        'room_type_id' => $defaultRoomType->id,
+                        'room_status_id' => $defaultRoomStatus->id,
+                        'beds' => 1,
+                        'notes' => null,
+                    ]
+                );
+            }
+        }
     }
 }

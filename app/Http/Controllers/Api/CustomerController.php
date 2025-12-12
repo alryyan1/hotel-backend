@@ -10,6 +10,8 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Response;
 use Illuminate\Validation\ValidationException;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class CustomerController extends Controller
 {
@@ -64,8 +66,100 @@ class CustomerController extends Controller
 
     public function destroy(Customer $customer): JsonResponse
     {
+        // Delete associated document if exists
+        if ($customer->document_path && Storage::disk('public')->exists($customer->document_path)) {
+            Storage::disk('public')->delete($customer->document_path);
+        }
+        
         $customer->delete();
         return response()->json(['message' => 'Deleted']);
+    }
+
+    public function uploadDocument(Request $request, Customer $customer): JsonResponse
+    {
+        try {
+            $request->validate([
+                'document' => 'required|file|mimes:pdf|max:10240', // Max 10MB
+            ]);
+
+            // Delete old document if exists
+            if ($customer->document_path && Storage::disk('public')->exists($customer->document_path)) {
+                Storage::disk('public')->delete($customer->document_path);
+            }
+
+            // Store the file
+            $file = $request->file('document');
+            $filename = 'customer_' . $customer->id . '_' . time() . '.' . $file->getClientOriginalExtension();
+            $path = $file->storeAs('documents/customers', $filename, 'public');
+
+            // Update customer with document path
+            $customer->update(['document_path' => $path]);
+
+            return response()->json([
+                'message' => 'Document uploaded successfully',
+                'document_path' => $path,
+                'document_url' => Storage::disk('public')->url($path),
+            ]);
+        } catch (ValidationException $e) {
+            return response()->json(['message' => 'Validation failed', 'errors' => $e->errors()], 422);
+        } catch (\Exception $e) {
+            Log::error('Document upload failed: ' . $e->getMessage());
+            return response()->json(['message' => 'Failed to upload document'], 500);
+        }
+    }
+
+    public function deleteDocument(Customer $customer): JsonResponse
+    {
+        try {
+            if ($customer->document_path && Storage::disk('public')->exists($customer->document_path)) {
+                Storage::disk('public')->delete($customer->document_path);
+            }
+
+            $customer->update(['document_path' => null]);
+
+            return response()->json(['message' => 'Document deleted successfully']);
+        } catch (\Exception $e) {
+            Log::error('Document deletion failed: ' . $e->getMessage());
+            return response()->json(['message' => 'Failed to delete document'], 500);
+        }
+    }
+
+    public function downloadDocument(Customer $customer): StreamedResponse|JsonResponse
+    {
+        if (!$customer->document_path || !Storage::disk('public')->exists($customer->document_path)) {
+            return response()->json(['message' => 'Document not found'], 404);
+        }
+
+        return Storage::disk('public')->download($customer->document_path);
+    }
+
+    public function getBalance(Customer $customer): JsonResponse
+    {
+        // Load customer with relations
+        $customer->load(['reservations.rooms.type', 'payments']);
+
+        // Get room types for pricing
+        $roomTypes = RoomType::all()->keyBy('id');
+
+        // Calculate ledger entries
+        $ledgerEntries = $this->calculateLedger($customer->reservations, $customer->payments, $roomTypes);
+
+        // Calculate total debit and credit
+        $totalDebit = 0;
+        $totalCredit = 0;
+
+        foreach ($ledgerEntries as $entry) {
+            $totalDebit += $entry['debit'];
+            $totalCredit += $entry['credit'];
+        }
+
+        $balance = $totalDebit - $totalCredit;
+
+        return response()->json([
+            'balance' => $balance,
+            'total_debit' => $totalDebit,
+            'total_credit' => $totalCredit,
+        ]);
     }
 
     public function exportLedgerPdf(Customer $customer): Response

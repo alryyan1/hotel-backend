@@ -60,7 +60,7 @@ class ReservationController extends Controller
                                 ->where('reservations.check_out_date', '>', $ci);
                           });
                       });
-                })
+                })->where('reservations.status', '!=', 'cancelled')
                 ->exists();
             if ($overlap) {
                 return response()->json(['message' => 'Room not available for selected period','room_id' => $roomReq['id']], 422);
@@ -237,7 +237,7 @@ class ReservationController extends Controller
             ];
         }
 
-        $responseData = $reservation;
+        $responseData = $reservation->load(['customer', 'rooms', 'payments']);
         $responseData->sms_result = $smsResult;
 
         return response()->json($responseData);
@@ -249,15 +249,10 @@ class ReservationController extends Controller
             return response()->json(['message' => 'Reservation must be confirmed to check in'], 422);
         }
 
-        // Set rooms to occupied
-        DB::transaction(function () use ($reservation) {
-            foreach ($reservation->rooms as $room) {
-                $room->update(['room_status_id' => \App\Models\RoomStatus::where('code','occupied')->value('id')]);
-            }
-            $reservation->update(['status' => 'checked_in']);
-        });
+        // Update reservation status to checked_in
+        $reservation->update(['status' => 'checked_in']);
 
-        return response()->json($reservation->fresh()->load('rooms'));
+        return response()->json($reservation->fresh()->load(['customer', 'rooms', 'payments']));
     }
 
     public function checkOut(Reservation $reservation)
@@ -267,15 +262,20 @@ class ReservationController extends Controller
         }
 
         DB::transaction(function () use ($reservation) {
-            // Set rooms to cleaning after checkout
-            $cleaningId = \App\Models\RoomStatus::where('code','cleaning')->value('id');
+            // Create cleaning notification for checkout
             foreach ($reservation->rooms as $room) {
-                $room->update(['room_status_id' => $cleaningId]);
+                \App\Models\CleaningNotification::create([
+                    'room_id' => $room->id,
+                    'reservation_id' => $reservation->id,
+                    'type' => 'checkout',
+                    'status' => 'pending',
+                    'notified_at' => now(),
+                ]);
             }
             $reservation->update(['status' => 'checked_out']);
         });
 
-        return response()->json($reservation->fresh()->load('rooms'));
+        return response()->json($reservation->fresh()->load(['customer', 'rooms', 'payments']));
     }
 
     public function cancel(Reservation $reservation)
@@ -284,6 +284,6 @@ class ReservationController extends Controller
             return response()->json(['message' => 'Cannot cancel after check-in'], 422);
         }
         $reservation->update(['status' => 'cancelled']);
-        return response()->json($reservation);
+        return response()->json($reservation->load(['customer', 'rooms', 'payments']));
     }
 }

@@ -37,8 +37,16 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::apiResource('payments', \App\Http\Controllers\Api\PaymentController::class);
     Route::get('customers/{customer}/payments', [\App\Http\Controllers\Api\PaymentController::class, 'getCustomerPayments']);
 
+    // Customer Balance
+    Route::get('customers/{customer}/balance', [\App\Http\Controllers\Api\CustomerController::class, 'getBalance']);
+    
     // Customer PDF Export
     Route::get('customers/{customer}/ledger/pdf', [\App\Http\Controllers\Api\CustomerController::class, 'exportLedgerPdf']);
+    
+    // Customer Document Management
+    Route::post('customers/{customer}/document', [\App\Http\Controllers\Api\CustomerController::class, 'uploadDocument']);
+    Route::delete('customers/{customer}/document', [\App\Http\Controllers\Api\CustomerController::class, 'deleteDocument']);
+    Route::get('customers/{customer}/document', [\App\Http\Controllers\Api\CustomerController::class, 'downloadDocument']);
 
     // Costs
     Route::get('costs/export/excel', [\App\Http\Controllers\Api\CostController::class, 'exportExcel']);
@@ -63,4 +71,11 @@ Route::middleware('auth:sanctum')->group(function () {
     
     // Inventory Receipts (must come before inventory routes to avoid route conflicts)
     Route::apiResource('inventory-receipts', \App\Http\Controllers\Api\InventoryReceiptController::class);
+    
+    // Cleaning Notifications
+    Route::get('cleaning-notifications', [\App\Http\Controllers\Api\CleaningNotificationController::class, 'index']);
+    Route::get('cleaning-notifications/count', [\App\Http\Controllers\Api\CleaningNotificationController::class, 'count']);
+    Route::get('cleaning-notifications/{cleaningNotification}', [\App\Http\Controllers\Api\CleaningNotificationController::class, 'show']);
+    Route::post('cleaning-notifications/{cleaningNotification}/complete', [\App\Http\Controllers\Api\CleaningNotificationController::class, 'complete']);
+    Route::post('cleaning-notifications/{cleaningNotification}/dismiss', [\App\Http\Controllers\Api\CleaningNotificationController::class, 'dismiss']);
 });
