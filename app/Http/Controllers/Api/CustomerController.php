@@ -202,39 +202,39 @@ class CustomerController extends Controller
         // Add a page
         $pdf->AddPage();
 
-        // Add header image
-        $headerImagePath = storage_path('app/public/images/header.png');
-        if (file_exists($headerImagePath)) {
+        // Add logo image at the top (small size)
+        $logoImagePath = public_path('logo.png');
+        if (file_exists($logoImagePath)) {
             try {
                 // Get image dimensions
-                $imageInfo = @getimagesize($headerImagePath);
+                $imageInfo = @getimagesize($logoImagePath);
                 if ($imageInfo !== false) {
-                    // Set maximum width for header (80% of page width)
-                    $maxHeaderWidth = $pageWidth * 0.8;
+                    // Set small width for logo (20% of page width)
+                    $maxLogoWidth = $pageWidth * 0.2;
                     
                     // Calculate height maintaining aspect ratio
                     $aspectRatio = $imageInfo[1] / $imageInfo[0];
-                    $headerWidthMM = $maxHeaderWidth;
-                    $headerHeightMM = $headerWidthMM * $aspectRatio;
+                    $logoWidthMM = $maxLogoWidth;
+                    $logoHeightMM = $logoWidthMM * $aspectRatio;
                     
                     // Temporarily disable RTL for image positioning (easier to calculate)
                     $pdf->setRTL(false);
                     
                     // Position at top center (simple center calculation)
-                    $xPos = ($pageWidth - $headerWidthMM) / 2;
+                    $xPos = ($pageWidth - $logoWidthMM) / 2;
                     $yPos = $topMargin;
                     
-                    $pdf->Image($headerImagePath, $xPos - 10, $yPos , $headerWidthMM+20, $headerHeightMM, 'PNG', '', '', false, 300, '', false, false, 0, false, false, false);
+                    $pdf->Image($logoImagePath, $xPos, $yPos, $logoWidthMM, $logoHeightMM, 'PNG', '', '', false, 300, '', false, false, 0, false, false, false);
                     
                     // Re-enable RTL
                     $pdf->setRTL(true);
                     
-                    // Move Y position down after header
-                    $pdf->SetY($yPos + $headerHeightMM + 5);
+                    // Move Y position down after logo
+                    $pdf->SetY($yPos + $logoHeightMM + 5);
                 }
             } catch (\Exception $e) {
                 // Silently continue if image fails to load
-                Log::warning('Failed to load header image: ' . $e->getMessage());
+                Log::warning('Failed to load logo image: ' . $e->getMessage());
             }
         }
 
@@ -337,14 +337,14 @@ class CustomerController extends Controller
         $pdf->SetFont('arial', 'B', 12);
         $pdf->Cell(0, 8, 'الرصيد النهائي: ' . number_format($finalBalance, 0, '.', ','), 0, 1, 'R');
 
-        // Add footer image at the bottom
-        $footerImagePath = storage_path('app/public/images/footer.png');
+        // Add footer image at the bottom of the page
+        $footerImagePath = public_path('footer.png');
         if (file_exists($footerImagePath)) {
             try {
                 // Get image dimensions
                 $imageInfo = @getimagesize($footerImagePath);
                 if ($imageInfo !== false) {
-                    // Set maximum width for footer (80% of page width)
+                    // Set maximum width for footer (90% of page width)
                     $maxFooterWidth = $pageWidth * 0.9;
                     
                     // Calculate height maintaining aspect ratio
@@ -355,15 +355,15 @@ class CustomerController extends Controller
                     // Get current Y position
                     $currentY = $pdf->GetY();
                     
-                    // Only add footer if there's enough space, otherwise add a new page
-                    if ($currentY + 10 + $footerHeightMM + $bottomMargin > $pageHeight - $bottomMargin) {
+                    // Check if we need a new page for footer
+                    if ($currentY + $footerHeightMM + $bottomMargin > $pageHeight - $bottomMargin) {
                         $pdf->AddPage();
                     }
                     
                     // Temporarily disable RTL for image positioning
                     $pdf->setRTL(false);
                     
-                    // Position footer at bottom center (simple center calculation)
+                    // Position footer at the very bottom of the page
                     $xPos = ($pageWidth - $footerWidthMM) / 2;
                     $yPos = $pageHeight - $footerHeightMM - $bottomMargin;
                     
