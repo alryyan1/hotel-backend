@@ -15,9 +15,22 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class CustomerController extends Controller
 {
-    public function index(): JsonResponse
+    public function index(Request $request): JsonResponse
     {
-        $customers = Customer::query()->orderByDesc('id')->paginate(20);
+        $query = Customer::query();
+        
+        // Search functionality
+        if ($request->has('search') && $request->get('search')) {
+            $search = $request->get('search');
+            $query->where(function($q) use ($search) {
+                $q->where('name', 'like', "%{$search}%")
+                  ->orWhere('phone', 'like', "%{$search}%")
+                  ->orWhere('national_id', 'like', "%{$search}%");
+            });
+        }
+        
+        $perPage = min($request->get('per_page', 20), 100);
+        $customers = $query->orderByDesc('id')->paginate($perPage);
         return response()->json($customers);
     }
 

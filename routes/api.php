@@ -28,6 +28,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('reservations/{reservation}/check-in', [\App\Http\Controllers\Api\ReservationController::class, 'checkIn']);
     Route::post('reservations/{reservation}/check-out', [\App\Http\Controllers\Api\ReservationController::class, 'checkOut']);
     Route::post('reservations/{reservation}/cancel', [\App\Http\Controllers\Api\ReservationController::class, 'cancel']);
+    Route::get('reservations/export/excel', [\App\Http\Controllers\Api\ReservationController::class, 'exportExcel']);
 
     // Hotel settings
     Route::get('settings/hotel', [\App\Http\Controllers\Api\HotelSettingController::class, 'show']);
