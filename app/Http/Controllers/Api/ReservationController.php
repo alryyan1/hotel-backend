@@ -21,6 +21,8 @@ use PhpOffice\PhpSpreadsheet\Worksheet\PageSetup;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 use App\Models\HotelSetting;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Http\Response;
+use App\Models\RoomType;
 
 class ReservationController extends Controller
 {
@@ -115,29 +117,29 @@ class ReservationController extends Controller
         ]);
 
         // Check overlap for each requested room
-        foreach ($data['rooms'] as $roomReq) {
-            $overlap = Reservation::query()
-                ->whereHas('rooms', function ($q) use ($roomReq, $data) {
-                    $q->where('rooms.id', $roomReq['id'])
-                      ->where(function($p) use ($roomReq, $data) {
-                          $ci = $roomReq['check_in_date'] ?? $data['check_in_date'];
-                          $co = $roomReq['check_out_date'] ?? $data['check_out_date'];
-                          $p->where(function($x) use ($ci, $co) {
-                              $x->where('reservation_room.check_in_date', '<', $co)
-                                ->where('reservation_room.check_out_date', '>', $ci);
-                          })->orWhere(function($x) use ($ci, $co) {
-                              $x->whereNull('reservation_room.check_in_date')
-                                ->whereNull('reservation_room.check_out_date')
-                                ->where('reservations.check_in_date', '<', $co)
-                                ->where('reservations.check_out_date', '>', $ci);
-                          });
-                      });
-                })->where('reservations.status', '!=', 'cancelled')
-                ->exists();
-            if ($overlap) {
-                return response()->json(['message' => 'Room not available for selected period','room_id' => $roomReq['id']], 422);
-            }
-        }
+        // foreach ($data['rooms'] as $roomReq) {
+        //     $overlap = Reservation::query()
+        //         ->whereHas('rooms', function ($q) use ($roomReq, $data) {
+        //             $q->where('rooms.id', $roomReq['id'])
+        //               ->where(function($p) use ($roomReq, $data) {
+        //                   $ci = $roomReq['check_in_date'] ?? $data['check_in_date'];
+        //                   $co = $roomReq['check_out_date'] ?? $data['check_out_date'];
+        //                   $p->where(function($x) use ($ci, $co) {
+        //                       $x->where('reservation_room.check_in_date', '<', $co)
+        //                         ->where('reservation_room.check_out_date', '>', $ci);
+        //                   })->orWhere(function($x) use ($ci, $co) {
+        //                       $x->whereNull('reservation_room.check_in_date')
+        //                         ->whereNull('reservation_room.check_out_date')
+        //                         ->where('reservations.check_in_date', '<', $co)
+        //                         ->where('reservations.check_out_date', '>', $ci);
+        //                   });
+        //               });
+        //         })->where('reservations.status', '!=', 'cancelled')
+        //         ->exists();
+        //     if ($overlap) {
+        //         return response()->json(['message' => 'Room not available for selected period','room_id' => $roomReq['id']], 422);
+        //     }
+        // }
 
         $reservation = Reservation::create([
             'customer_id' => $data['customer_id'],
@@ -414,6 +416,9 @@ class ReservationController extends Controller
         $spreadsheet = new Spreadsheet();
         $sheet = $spreadsheet->getActiveSheet();
         $sheet->setTitle('الحجوزات');
+        
+        // Set RTL (Right-to-Left) direction
+        $sheet->setRightToLeft(true);
 
         // Set print settings
         $sheet->getPageSetup()
@@ -456,7 +461,7 @@ class ReservationController extends Controller
         $hotelEmail = $hotelSettings?->email ?? '';
 
         // Set hotel name (centered, spanning multiple columns)
-        $sheet->mergeCells('C' . $currentRow . ':L' . $currentRow);
+        $sheet->mergeCells('C' . $currentRow . ':I' . $currentRow);
         $sheet->setCellValue('C' . $currentRow, $hotelName);
         $sheet->getStyle('C' . $currentRow)->applyFromArray([
             'font' => ['bold' => true, 'size' => 18, 'color' => ['rgb' => '1F4E78']],
@@ -473,18 +478,18 @@ class ReservationController extends Controller
         if ($hotelEmail) $details[] = 'البريد: ' . $hotelEmail;
 
         if (!empty($details)) {
-            $sheet->mergeCells('C' . $currentRow . ':L' . $currentRow);
+            $sheet->mergeCells('C' . $currentRow . ':I' . $currentRow);
             $sheet->setCellValue('C' . $currentRow, implode(' | ', $details));
             $sheet->getStyle('C' . $currentRow)->applyFromArray([
                 'font' => ['size' => 11, 'color' => ['rgb' => '666666']],
-                'alignment' => ['horizontal' => Alignment::HORIZONTAL_CENTER, 'vertical' => Alignment::VERTICAL_CENTER],
+                'alignment' => ['horizontal' => Alignment::HORIZONTAL_RIGHT, 'vertical' => Alignment::VERTICAL_CENTER],
             ]);
             $currentRow++;
         }
 
         // Report title
         $currentRow++;
-        $sheet->mergeCells('A' . $currentRow . ':L' . $currentRow);
+        $sheet->mergeCells('A' . $currentRow . ':I' . $currentRow);
         $sheet->setCellValue('A' . $currentRow, 'تقرير الحجوزات');
         $sheet->getStyle('A' . $currentRow)->applyFromArray([
             'font' => ['bold' => true, 'size' => 16, 'color' => ['rgb' => '1F4E78']],
@@ -494,7 +499,7 @@ class ReservationController extends Controller
         $currentRow++;
 
         // Report date
-        $sheet->mergeCells('A' . $currentRow . ':L' . $currentRow);
+        $sheet->mergeCells('A' . $currentRow . ':I' . $currentRow);
         $sheet->setCellValue('A' . $currentRow, 'تاريخ التقرير: ' . date('Y-m-d H:i'));
         $sheet->getStyle('A' . $currentRow)->applyFromArray([
             'font' => ['size' => 10, 'color' => ['rgb' => '666666']],
@@ -503,8 +508,8 @@ class ReservationController extends Controller
         $currentRow++;
         $currentRow++; // Empty row before table
 
-        // Headers
-        $headers = ['رقم الحجز', 'العميل', 'الهاتف', 'الغرف', 'تاريخ الوصول', 'تاريخ المغادرة', 'عدد الضيوف', 'الحالة', 'المبلغ الإجمالي', 'المبلغ المدفوع', 'المتبقي', 'الملاحظات'];
+        // Headers (removed: عدد الضيوف, الحالة, الملاحظات)
+        $headers = ['رقم الحجز', 'العميل', 'الهاتف', 'الغرف', 'تاريخ الوصول', 'تاريخ المغادرة', 'المبلغ الإجمالي', 'المبلغ المدفوع', 'المتبقي'];
         $headerRow = $currentRow;
         $col = 'A';
 
@@ -516,7 +521,7 @@ class ReservationController extends Controller
                     'fillType' => Fill::FILL_SOLID,
                     'startColor' => ['rgb' => '4472C4']
                 ],
-                'alignment' => ['horizontal' => Alignment::HORIZONTAL_CENTER, 'vertical' => Alignment::VERTICAL_CENTER],
+                'alignment' => ['horizontal' => Alignment::HORIZONTAL_RIGHT, 'vertical' => Alignment::VERTICAL_CENTER],
                 'borders' => [
                     'allBorders' => [
                         'borderStyle' => Border::BORDER_THIN,
@@ -527,15 +532,6 @@ class ReservationController extends Controller
             $col++;
         }
         $sheet->getRowDimension($headerRow)->setRowHeight(25);
-
-        // Status labels
-        $statusLabels = [
-            'pending' => 'في الانتظار',
-            'confirmed' => 'مؤكد',
-            'checked_in' => 'تم تسجيل الوصول',
-            'checked_out' => 'تم تسجيل المغادرة',
-            'cancelled' => 'ملغي'
-        ];
 
         // Data rows
         $row = $currentRow + 1;
@@ -562,34 +558,31 @@ class ReservationController extends Controller
             $sheet->setCellValue('D' . $row, $rooms);
             $sheet->setCellValue('E' . $row, $reservation->check_in_date ? date('Y-m-d', strtotime($reservation->check_in_date)) : '');
             $sheet->setCellValue('F' . $row, $reservation->check_out_date ? date('Y-m-d', strtotime($reservation->check_out_date)) : '');
-            $sheet->setCellValue('G' . $row, $reservation->guest_count ?? '');
-            $sheet->setCellValue('H' . $row, $statusLabels[$reservation->status] ?? $reservation->status);
-            $sheet->setCellValue('I' . $row, number_format($totalAmountValue, 2));
-            $sheet->setCellValue('J' . $row, number_format($paidAmountValue, 2));
-            $sheet->setCellValue('K' . $row, number_format($balanceValue, 2));
-            $sheet->setCellValue('L' . $row, $reservation->notes ?? '');
+            $sheet->setCellValue('G' . $row, number_format($totalAmountValue, 2));
+            $sheet->setCellValue('H' . $row, number_format($paidAmountValue, 2));
+            $sheet->setCellValue('I' . $row, number_format($balanceValue, 2));
 
             // Style data cells
-            $sheet->getStyle('A' . $row . ':L' . $row)->applyFromArray([
+            $sheet->getStyle('A' . $row . ':I' . $row)->applyFromArray([
                 'borders' => [
                     'allBorders' => [
                         'borderStyle' => Border::BORDER_THIN,
                         'color' => ['rgb' => 'CCCCCC'],
                     ],
                 ],
-                'alignment' => ['horizontal' => Alignment::HORIZONTAL_CENTER, 'vertical' => Alignment::VERTICAL_CENTER],
+                'alignment' => ['horizontal' => Alignment::HORIZONTAL_RIGHT, 'vertical' => Alignment::VERTICAL_CENTER],
             ]);
 
             // Highlight balance if positive (amount due)
             if ($balanceValue > 0) {
-                $sheet->getStyle('K' . $row)->applyFromArray([
+                $sheet->getStyle('I' . $row)->applyFromArray([
                     'font' => ['color' => ['rgb' => 'C00000'], 'bold' => true],
                 ]);
             }
 
             // Alternate row colors for better readability
             if ($row % 2 == 0) {
-                $sheet->getStyle('A' . $row . ':L' . $row)->applyFromArray([
+                $sheet->getStyle('A' . $row . ':I' . $row)->applyFromArray([
                     'fill' => [
                         'fillType' => Fill::FILL_SOLID,
                         'startColor' => ['rgb' => 'F2F2F2']
@@ -602,20 +595,19 @@ class ReservationController extends Controller
 
         // Total row
         $totalRow = $row;
-        $sheet->mergeCells('A' . $totalRow . ':H' . $totalRow);
+        $sheet->mergeCells('A' . $totalRow . ':F' . $totalRow);
         $sheet->setCellValue('A' . $totalRow, 'الإجمالي');
-        $sheet->setCellValue('I' . $totalRow, number_format($totalAmount, 2));
-        $sheet->setCellValue('J' . $totalRow, number_format($totalPaid, 2));
-        $sheet->setCellValue('K' . $totalRow, number_format($totalBalance, 2));
-        $sheet->setCellValue('L' . $totalRow, '');
+        $sheet->setCellValue('G' . $totalRow, number_format($totalAmount, 2));
+        $sheet->setCellValue('H' . $totalRow, number_format($totalPaid, 2));
+        $sheet->setCellValue('I' . $totalRow, number_format($totalBalance, 2));
 
-        $sheet->getStyle('A' . $totalRow . ':L' . $totalRow)->applyFromArray([
+        $sheet->getStyle('A' . $totalRow . ':I' . $totalRow)->applyFromArray([
             'font' => ['bold' => true, 'size' => 12, 'color' => ['rgb' => 'FFFFFF']],
             'fill' => [
                 'fillType' => Fill::FILL_SOLID,
                 'startColor' => ['rgb' => '1F4E78']
             ],
-            'alignment' => ['horizontal' => Alignment::HORIZONTAL_CENTER, 'vertical' => Alignment::VERTICAL_CENTER],
+            'alignment' => ['horizontal' => Alignment::HORIZONTAL_RIGHT, 'vertical' => Alignment::VERTICAL_CENTER],
             'borders' => [
                 'allBorders' => [
                     'borderStyle' => Border::BORDER_THICK,
@@ -626,7 +618,7 @@ class ReservationController extends Controller
         $sheet->getRowDimension($totalRow)->setRowHeight(25);
 
         // Auto-size columns
-        foreach (range('A', 'L') as $col) {
+        foreach (range('A', 'I') as $col) {
             $sheet->getColumnDimension($col)->setAutoSize(true);
         }
 
@@ -637,15 +629,12 @@ class ReservationController extends Controller
         $sheet->getColumnDimension('D')->setWidth(25); // الغرف
         $sheet->getColumnDimension('E')->setWidth(15); // تاريخ الوصول
         $sheet->getColumnDimension('F')->setWidth(15); // تاريخ المغادرة
-        $sheet->getColumnDimension('G')->setWidth(12); // عدد الضيوف
-        $sheet->getColumnDimension('H')->setWidth(18); // الحالة
-        $sheet->getColumnDimension('I')->setWidth(15); // المبلغ الإجمالي
-        $sheet->getColumnDimension('J')->setWidth(15); // المبلغ المدفوع
-        $sheet->getColumnDimension('K')->setWidth(15); // المتبقي
-        $sheet->getColumnDimension('L')->setWidth(30); // الملاحظات
+        $sheet->getColumnDimension('G')->setWidth(15); // المبلغ الإجمالي
+        $sheet->getColumnDimension('H')->setWidth(15); // المبلغ المدفوع
+        $sheet->getColumnDimension('I')->setWidth(15); // المتبقي
 
         // Set print area
-        $sheet->getPageSetup()->setPrintArea('A1:L' . $totalRow);
+        $sheet->getPageSetup()->setPrintArea('A1:I' . $totalRow);
 
         $filename = 'reservations_export_' . date('Y-m-d_His') . '.xlsx';
 
@@ -658,5 +647,231 @@ class ReservationController extends Controller
             'Content-Disposition' => 'attachment; filename="' . $filename . '"',
             'Cache-Control' => 'max-age=0',
         ]);
+    }
+
+    /**
+     * Generate invoice PDF for a reservation
+     */
+    public function exportInvoicePdf(Reservation $reservation): Response
+    {
+        // Load reservation with relations
+        $reservation->load(['customer', 'rooms.type', 'payments']);
+
+        // Get room types for pricing
+        $roomTypes = RoomType::all()->keyBy('id');
+
+        // Create PDF with RTL support
+        $pdf = new \TCPDF('P', 'mm', 'A4', true, 'UTF-8', false);
+        $pdf->SetCreator('Hotel Management System');
+        $pdf->SetAuthor('Hotel Management System');
+        $pdf->SetTitle('فاتورة الحجز #' . $reservation->id);
+        $pdf->SetSubject('Reservation Invoice');
+
+        // Remove default header/footer
+        $pdf->setPrintHeader(false);
+        $pdf->setPrintFooter(false);
+
+        // Set margins (15mm on each side) - same as ledger PDF
+        $leftMargin = 15;
+        $rightMargin = 15;
+        $topMargin = 15;
+        $bottomMargin = 15;
+        $pdf->SetMargins($leftMargin, $topMargin, $rightMargin);
+        $pdf->SetAutoPageBreak(true, $bottomMargin);
+
+        // Page dimensions (A4)
+        $pageWidth = 210; // A4 width in mm
+        $pageHeight = 297; // A4 height in mm
+
+        // Set RTL direction
+        $pdf->setRTL(true);
+
+        // Add a page
+        $pdf->AddPage();
+
+        // Add logo image at the top (small size)
+        $logoImagePath = public_path('logo.png');
+        if (file_exists($logoImagePath)) {
+            try {
+                // Get image dimensions
+                $imageInfo = @getimagesize($logoImagePath);
+                if ($imageInfo !== false) {
+                    // Set small width for logo (20% of page width)
+                    $maxLogoWidth = $pageWidth * 0.2;
+
+                    // Calculate height maintaining aspect ratio
+                    $aspectRatio = $imageInfo[1] / $imageInfo[0];
+                    $logoWidthMM = $maxLogoWidth;
+                    $logoHeightMM = $logoWidthMM * $aspectRatio;
+
+                    // Temporarily disable RTL for image positioning
+                    $pdf->setRTL(false);
+
+                    // Position at top center
+                    $xPos = ($pageWidth - $logoWidthMM) / 2;
+                    $yPos = $topMargin;
+
+                    $pdf->Image($logoImagePath, $xPos, $yPos, $logoWidthMM, $logoHeightMM, 'PNG', '', '', false, 300, '', false, false, 0, false, false, false);
+
+                    // Re-enable RTL
+                    $pdf->setRTL(true);
+
+                    // Move Y position down after logo
+                    $pdf->SetY($yPos + $logoHeightMM + 5);
+                }
+            } catch (\Exception $e) {
+                // Silently continue if image fails to load
+                Log::warning('Failed to load logo image: ' . $e->getMessage());
+            }
+        }
+
+        // Set font for Arabic text
+        $pdf->SetFont('arial', 'B', 18);
+        $pdf->Cell(0, 10, 'فاتورة الحجز', 0, 1, 'C');
+        $pdf->Ln(5);
+
+        // Reservation Information
+        $pdf->SetFont('arial', 'B', 12);
+        $pdf->Cell(0, 8, 'معلومات الحجز', 0, 1, 'R');
+        $pdf->SetFont('arial', '', 10);
+
+        $reservationInfo = [
+            'رقم الحجز: #' . $reservation->id,
+            'تاريخ الوصول: ' . date('d/m/Y', strtotime($reservation->check_in_date)),
+            'تاريخ المغادرة: ' . date('d/m/Y', strtotime($reservation->check_out_date)),
+            'عدد الضيوف: ' . ($reservation->guest_count ?? 1),
+        ];
+
+        foreach ($reservationInfo as $info) {
+            $pdf->Cell(0, 6, $info, 0, 1, 'R');
+        }
+
+        $pdf->Ln(5);
+
+        // Customer Information
+        $pdf->SetFont('arial', 'B', 12);
+        $pdf->Cell(0, 8, 'بيانات العميل', 0, 1, 'R');
+        $pdf->SetFont('arial', '', 10);
+
+        $customerInfo = [
+            'الاسم: ' . $reservation->customer->name,
+            $reservation->customer->phone ? 'الهاتف: ' . $reservation->customer->phone : null,
+            $reservation->customer->national_id ? 'الرقم الوطني: ' . $reservation->customer->national_id : null,
+        ];
+
+        foreach (array_filter($customerInfo) as $info) {
+            $pdf->Cell(0, 6, $info, 0, 1, 'R');
+        }
+
+        $pdf->Ln(5);
+
+        // Calculate days
+        $checkIn = new \DateTime($reservation->check_in_date);
+        $checkOut = new \DateTime($reservation->check_out_date);
+        $interval = $checkIn->diff($checkOut);
+        $days = max(1, $interval->days);
+
+        // Calculate total amount
+        $totalAmount = 0;
+        $roomDetails = [];
+
+        foreach ($reservation->rooms as $room) {
+            $basePrice = ($room->type && $room->type->base_price)
+                ? $room->type->base_price
+                : ($roomTypes[$room->room_type_id]->base_price ?? 0);
+            $roomAmount = $days * $basePrice;
+            $totalAmount += $roomAmount;
+            $roomDetails[] = [
+                'name' => 'غرفة ' . $room->number,
+                'days' => $days,
+                'price_per_day' => $basePrice,
+                'total' => $roomAmount
+            ];
+        }
+
+        // Invoice Table Header
+        $pdf->SetFont('arial', 'B', 10);
+        $pdf->SetFillColor(230, 230, 230);
+
+        $colDescription = 80;
+        $colDays = 30;
+        $colPrice = 40;
+        $colTotal = 40;
+
+        $pdf->Cell($colDescription, 8, 'الوصف', 1, 0, 'C', true);
+        $pdf->Cell($colDays, 8, 'عدد الأيام', 1, 0, 'C', true);
+        $pdf->Cell($colPrice, 8, 'السعر/يوم', 1, 0, 'C', true);
+        $pdf->Cell($colTotal, 8, 'الإجمالي', 1, 1, 'C', true);
+
+        // Invoice Items
+        $pdf->SetFont('arial', '', 9);
+        foreach ($roomDetails as $room) {
+            $pdf->Cell($colDescription, 7, $room['name'], 1, 0, 'R');
+            $pdf->Cell($colDays, 7, $room['days'], 1, 0, 'C');
+            $pdf->Cell($colPrice, 7, number_format($room['price_per_day'], 0, '.', ','), 1, 0, 'C');
+            $pdf->Cell($colTotal, 7, number_format($room['total'], 0, '.', ','), 1, 1, 'C');
+        }
+
+        // Total Row
+        $pdf->SetFont('arial', 'B', 10);
+        $pdf->SetFillColor(240, 240, 240);
+        $totalColSpan = $colDescription + $colDays + $colPrice;
+        $pdf->Cell($totalColSpan, 8, 'الإجمالي', 1, 0, 'R', true);
+        $pdf->Cell($colTotal, 8, number_format($totalAmount, 0, '.', ','), 1, 1, 'C', true);
+
+        // Calculate paid amount
+        $paidAmount = $reservation->payments->sum('amount');
+        $remainingAmount = $totalAmount - $paidAmount;
+
+        $pdf->Ln(5);
+
+        // Payment Summary
+        $pdf->SetFont('arial', 'B', 12);
+        $pdf->Cell(0, 8, 'ملخص الدفع', 0, 1, 'R');
+        $pdf->SetFont('arial', '', 10);
+
+        $paymentInfo = [
+            'المبلغ الإجمالي: ' . number_format($totalAmount, 0, '.', ',') . ' ',
+            'المبلغ المدفوع: ' . number_format($paidAmount, 0, '.', ',') . ' ',
+            'المبلغ المتبقي: ' . number_format($remainingAmount, 0, '.', ',') . ' ',
+        ];
+
+        foreach ($paymentInfo as $info) {
+            $pdf->Cell(0, 6, $info, 0, 1, 'R');
+        }
+
+        // Add footer image at the bottom
+        $footerImagePath = public_path('footer.png');
+        if (file_exists($footerImagePath)) {
+            try {
+                $imageInfo = @getimagesize($footerImagePath);
+                if ($imageInfo !== false) {
+                    $maxFooterWidth = $pageWidth * 0.9;
+                    $aspectRatio = $imageInfo[1] / $imageInfo[0];
+                    $footerWidthMM = $maxFooterWidth;
+                    $footerHeightMM = $footerWidthMM * $aspectRatio;
+
+                    $currentY = $pdf->GetY();
+                    if ($currentY + $footerHeightMM + $bottomMargin > $pageHeight - $bottomMargin) {
+                        $pdf->AddPage();
+                    }
+
+                    $pdf->setRTL(false);
+                    $xPos = ($pageWidth - $footerWidthMM) / 2;
+                    $yPos = $pageHeight - $footerHeightMM - $bottomMargin;
+
+                    $pdf->Image($footerImagePath, $xPos, $yPos, $footerWidthMM, $footerHeightMM, 'PNG', '', '', false, 300, '', false, false, 0, false, false, false);
+                    $pdf->setRTL(true);
+                }
+            } catch (\Exception $e) {
+                Log::warning('Failed to load footer image: ' . $e->getMessage());
+            }
+        }
+
+        // Generate PDF and return as response
+        $filename = 'invoice_reservation_' . $reservation->id . '_' . date('Y-m-d') . '.pdf';
+        return response($pdf->Output($filename, 'S'), 200)
+            ->header('Content-Type', 'application/pdf')
+            ->header('Content-Disposition', 'attachment; filename="' . $filename . '"');
     }
 }

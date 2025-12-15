@@ -6,6 +6,22 @@ use Illuminate\Support\Facades\Route;
 // Auth
 Route::post('login', [\App\Http\Controllers\Api\AuthController::class, 'login']);
 
+// Public API (no authentication required)
+Route::prefix('public')->group(function () {
+    // Room types for public viewing
+    Route::get('room-types', [\App\Http\Controllers\Api\RoomTypeController::class, 'index']);
+    
+    // Availability search
+    Route::get('availability', [\App\Http\Controllers\Api\AvailabilityController::class, 'search']);
+    
+    // Customer operations (for booking)
+    Route::get('customers/all', [\App\Http\Controllers\Api\CustomerController::class, 'fetchAll']);
+    Route::post('customers', [\App\Http\Controllers\Api\CustomerController::class, 'store']);
+    
+    // Reservation creation
+    Route::post('reservations', [\App\Http\Controllers\Api\ReservationController::class, 'store']);
+});
+
 // Protected API
 Route::middleware('auth:sanctum')->group(function () {
     Route::get('me', [\App\Http\Controllers\Api\AuthController::class, 'me']);
@@ -17,6 +33,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::apiResource('room-statuses', \App\Http\Controllers\Api\RoomStatusController::class);
     Route::apiResource('rooms', \App\Http\Controllers\Api\RoomController::class);
     Route::apiResource('reservations', \App\Http\Controllers\Api\ReservationController::class);
+    Route::get('customers/all', [\App\Http\Controllers\Api\CustomerController::class, 'fetchAll']);
     Route::apiResource('customers', \App\Http\Controllers\Api\CustomerController::class);
     Route::apiResource('users', \App\Http\Controllers\Api\UserController::class);
 
@@ -29,6 +46,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('reservations/{reservation}/check-out', [\App\Http\Controllers\Api\ReservationController::class, 'checkOut']);
     Route::post('reservations/{reservation}/cancel', [\App\Http\Controllers\Api\ReservationController::class, 'cancel']);
     Route::get('reservations/export/excel', [\App\Http\Controllers\Api\ReservationController::class, 'exportExcel']);
+    Route::get('reservations/{reservation}/invoice/pdf', [\App\Http\Controllers\Api\ReservationController::class, 'exportInvoicePdf']);
 
     // Hotel settings
     Route::get('settings/hotel', [\App\Http\Controllers\Api\HotelSettingController::class, 'show']);
@@ -37,6 +55,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // Payments
     Route::apiResource('payments', \App\Http\Controllers\Api\PaymentController::class);
     Route::get('customers/{customer}/payments', [\App\Http\Controllers\Api\PaymentController::class, 'getCustomerPayments']);
+    Route::get('payments/{payment}/invoice/pdf', [\App\Http\Controllers\Api\PaymentController::class, 'exportInvoicePdf']);
 
     // Customer Balance
     Route::get('customers/{customer}/balance', [\App\Http\Controllers\Api\CustomerController::class, 'getBalance']);

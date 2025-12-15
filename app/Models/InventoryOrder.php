@@ -6,6 +6,31 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
+/**
+ * @property int $id
+ * @property string $order_number
+ * @property \Illuminate\Support\Carbon $order_date
+ * @property string $status
+ * @property string|null $notes
+ * @property int $user_id
+ * @property \Illuminate\Support\Carbon|null $created_at
+ * @property \Illuminate\Support\Carbon|null $updated_at
+ * @property-read \Illuminate\Database\Eloquent\Collection<int, \App\Models\InventoryOrderItem> $items
+ * @property-read int|null $items_count
+ * @property-read \App\Models\User $user
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|InventoryOrder newModelQuery()
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|InventoryOrder newQuery()
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|InventoryOrder query()
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|InventoryOrder whereCreatedAt($value)
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|InventoryOrder whereId($value)
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|InventoryOrder whereNotes($value)
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|InventoryOrder whereOrderDate($value)
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|InventoryOrder whereOrderNumber($value)
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|InventoryOrder whereStatus($value)
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|InventoryOrder whereUpdatedAt($value)
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|InventoryOrder whereUserId($value)
+ * @mixin \Eloquent
+ */
 class InventoryOrder extends Model
 {
     protected $fillable = [

@@ -18,19 +18,25 @@ class CustomerController extends Controller
     public function index(Request $request): JsonResponse
     {
         $query = Customer::query();
-        
+
         // Search functionality
         if ($request->has('search') && $request->get('search')) {
             $search = $request->get('search');
-            $query->where(function($q) use ($search) {
+            $query->where(function ($q) use ($search) {
                 $q->where('name', 'like', "%{$search}%")
-                  ->orWhere('phone', 'like', "%{$search}%")
-                  ->orWhere('national_id', 'like', "%{$search}%");
+                    ->orWhere('phone', 'like', "%{$search}%")
+                    ->orWhere('national_id', 'like', "%{$search}%");
             });
         }
-        
+
         $perPage = min($request->get('per_page', 20), 100);
         $customers = $query->orderByDesc('id')->paginate($perPage);
+        return response()->json($customers);
+    }
+
+    public function fetchAll(): JsonResponse
+    {
+        $customers = Customer::all();
         return response()->json($customers);
     }
 
@@ -83,7 +89,7 @@ class CustomerController extends Controller
         if ($customer->document_path && Storage::disk('public')->exists($customer->document_path)) {
             Storage::disk('public')->delete($customer->document_path);
         }
-        
+
         $customer->delete();
         return response()->json(['message' => 'Deleted']);
     }
@@ -224,24 +230,24 @@ class CustomerController extends Controller
                 if ($imageInfo !== false) {
                     // Set small width for logo (20% of page width)
                     $maxLogoWidth = $pageWidth * 0.2;
-                    
+
                     // Calculate height maintaining aspect ratio
                     $aspectRatio = $imageInfo[1] / $imageInfo[0];
                     $logoWidthMM = $maxLogoWidth;
                     $logoHeightMM = $logoWidthMM * $aspectRatio;
-                    
+
                     // Temporarily disable RTL for image positioning (easier to calculate)
                     $pdf->setRTL(false);
-                    
+
                     // Position at top center (simple center calculation)
                     $xPos = ($pageWidth - $logoWidthMM) / 2;
                     $yPos = $topMargin;
-                    
+
                     $pdf->Image($logoImagePath, $xPos, $yPos, $logoWidthMM, $logoHeightMM, 'PNG', '', '', false, 300, '', false, false, 0, false, false, false);
-                    
+
                     // Re-enable RTL
                     $pdf->setRTL(true);
-                    
+
                     // Move Y position down after logo
                     $pdf->SetY($yPos + $logoHeightMM + 5);
                 }
@@ -276,31 +282,39 @@ class CustomerController extends Controller
         $pdf->SetFont('arial', 'B', 12);
         $pdf->Cell(0, 8, 'بيانات العميل', 0, 1, 'R');
         $pdf->SetFont('arial', '', 10);
-        
+
         $customerInfo = [
             'الاسم: ' . $customer->name,
             $customer->phone ? 'الهاتف: ' . $customer->phone : null,
             $customer->national_id ? 'الرقم الوطني: ' . $customer->national_id : null,
         ];
-        
+
         foreach (array_filter($customerInfo) as $info) {
             $pdf->Cell(0, 6, $info, 0, 1, 'R');
         }
-        
+
         $pdf->Ln(5);
 
         // Ledger Table Header
         $pdf->SetFont('arial', 'B', 10);
         $pdf->SetFillColor(230, 230, 230);
-        
-        $pdf->Cell($colBalance, 8, 'الرصيد', 1, 0, 'C', true);
-        $pdf->Cell($colCredit, 8, 'دائن', 1, 0, 'C', true);
-        $pdf->Cell($colDebit, 8, 'مدين', 1, 0, 'C', true);
-        $pdf->Cell($colDays, 8, 'الأيام', 1, 0, 'C', true);
-        $pdf->Cell($colDetails, 8, 'الغرف / طريقة الدفع', 1, 0, 'C', true);
-        $pdf->Cell($colDescription, 8, 'الوصف', 1, 0, 'C', true);
-        $pdf->Cell($colDate, 8, 'التاريخ', 1, 1, 'C', true);
 
+        // ... (code before header)
+
+        // Ledger Table Header
+        $pdf->SetFont('arial', 'B', 10);
+        $pdf->SetFillColor(230, 230, 230);
+
+        // NEW ORDER (RTL: Date -> Description -> Details -> Days -> Debit -> Credit -> Balance)
+        $pdf->Cell($colDate, 8, 'التاريخ', 1, 0, 'C', true);         // 1. Far Right
+        $pdf->Cell($colDescription, 8, 'الوصف', 1, 0, 'C', true);     // 2.
+        $pdf->Cell($colDetails, 8, 'الغرف / طريقة الدفع', 1, 0, 'C', true); // 3.
+        $pdf->Cell($colDays, 8, 'الأيام', 1, 0, 'C', true);         // 4.
+        $pdf->Cell($colDebit, 8, 'مدين', 1, 0, 'C', true);          // 5.
+        $pdf->Cell($colCredit, 8, 'دائن', 1, 0, 'C', true);         // 6.
+        $pdf->Cell($colBalance, 8, 'الرصيد', 1, 1, 'C', true);      // 7. Far Left (Note: 1, 1 moves to the next line)
+
+        // ... (code after header)
         // Ledger Entries
         $pdf->SetFont('arial', '', 9);
         $totalDebit = 0;
@@ -311,26 +325,31 @@ class CustomerController extends Controller
             $totalCredit += $entry['credit'];
 
             // RTL order: Balance, Credit, Debit, Days, Details, Description, Date
-            $balance = number_format($entry['balance'], 0, '.', ',');
-            $pdf->Cell($colBalance, 7, $balance, 1, 0, 'C');
-            
-            $credit = $entry['credit'] > 0 ? number_format($entry['credit'], 0, '.', ',') : '-';
-            $pdf->Cell($colCredit, 7, $credit, 1, 0, 'C');
-            
-            $debit = $entry['debit'] > 0 ? number_format($entry['debit'], 0, '.', ',') : '-';
-            $pdf->Cell($colDebit, 7, $debit, 1, 0, 'C');
-            
-            $days = $entry['days'] ?? '-';
-            $pdf->Cell($colDays, 7, $days, 1, 0, 'C');
-            
-            $details = $entry['type'] === 'reservation' 
+            // ... (inside foreach ($ledgerEntries as $entry) { ... )
+
+            // RTL order: Date, Description, Details, Days, Debit, Credit, Balance
+            $pdf->Cell($colDate, 7, $entry['date'], 1, 0, 'C');             // 1. Far Right
+
+            $pdf->Cell($colDescription, 7, $entry['description'], 1, 0, 'R'); // 2. (Right align for description text)
+
+            $details = $entry['type'] === 'reservation'
                 ? ($entry['rooms'] ?? '')
                 : ($entry['paymentMethod'] ?? '');
-            $pdf->Cell($colDetails, 7, $details, 1, 0, 'C');
-            
-            $pdf->Cell($colDescription, 7, $entry['description'], 1, 0, 'R');
-            
-            $pdf->Cell($colDate, 7, $entry['date'], 1, 1, 'C');
+            $pdf->Cell($colDetails, 7, $details, 1, 0, 'C');                // 3.
+
+            $days = $entry['days'] ?? '-';
+            $pdf->Cell($colDays, 7, $days, 1, 0, 'C');                      // 4.
+
+            $debit = $entry['debit'] > 0 ? number_format($entry['debit'], 0, '.', ',') : '-';
+            $pdf->Cell($colDebit, 7, $debit, 1, 0, 'C');                    // 5.
+
+            $credit = $entry['credit'] > 0 ? number_format($entry['credit'], 0, '.', ',') : '-';
+            $pdf->Cell($colCredit, 7, $credit, 1, 0, 'C');                  // 6.
+
+            $balance = number_format($entry['balance'], 0, '.', ',');
+            $pdf->Cell($colBalance, 7, $balance, 1, 1, 'C');                // 7. Far Left (1, 1 moves to the next line)
+
+            // ... (end of foreach loop)
         }
 
         // Totals Row (RTL order)
@@ -338,7 +357,7 @@ class CustomerController extends Controller
         $pdf->SetFillColor(240, 240, 240);
         $totalColSpan = $colDate + $colDescription + $colDetails + $colDays; // 22+51+34+17 = 124
         $finalBalance = $totalDebit - $totalCredit;
-        
+
         $pdf->Cell($colBalance, 8, number_format($finalBalance, 0, '.', ','), 1, 0, 'C', true);
         $pdf->Cell($colCredit, 8, number_format($totalCredit, 0, '.', ','), 1, 0, 'C', true);
         $pdf->Cell($colDebit, 8, number_format($totalDebit, 0, '.', ','), 1, 0, 'C', true);
@@ -359,29 +378,29 @@ class CustomerController extends Controller
                 if ($imageInfo !== false) {
                     // Set maximum width for footer (90% of page width)
                     $maxFooterWidth = $pageWidth * 0.9;
-                    
+
                     // Calculate height maintaining aspect ratio
                     $aspectRatio = $imageInfo[1] / $imageInfo[0];
                     $footerWidthMM = $maxFooterWidth;
                     $footerHeightMM = $footerWidthMM * $aspectRatio;
-                    
+
                     // Get current Y position
                     $currentY = $pdf->GetY();
-                    
+
                     // Check if we need a new page for footer
                     if ($currentY + $footerHeightMM + $bottomMargin > $pageHeight - $bottomMargin) {
                         $pdf->AddPage();
                     }
-                    
+
                     // Temporarily disable RTL for image positioning
                     $pdf->setRTL(false);
-                    
+
                     // Position footer at the very bottom of the page
                     $xPos = ($pageWidth - $footerWidthMM) / 2;
                     $yPos = $pageHeight - $footerHeightMM - $bottomMargin;
-                    
+
                     $pdf->Image($footerImagePath, $xPos, $yPos, $footerWidthMM, $footerHeightMM, 'PNG', '', '', false, 300, '', false, false, 0, false, false, false);
-                    
+
                     // Re-enable RTL
                     $pdf->setRTL(true);
                 }
@@ -423,7 +442,7 @@ class CustomerController extends Controller
         }
 
         // Sort by date
-        usort($allEntries, function($a, $b) {
+        usort($allEntries, function ($a, $b) {
             return strtotime($a['date']) - strtotime($b['date']);
         });
 
@@ -446,8 +465,8 @@ class CustomerController extends Controller
                 $roomNames = [];
 
                 foreach ($reservation->rooms as $room) {
-                    $basePrice = ($room->type && $room->type->base_price) 
-                        ? $room->type->base_price 
+                    $basePrice = ($room->type && $room->type->base_price)
+                        ? $room->type->base_price
                         : ($roomTypes[$room->room_type_id]->base_price ?? 0);
                     $roomDebit = $days * $basePrice;
                     $totalDebit += $roomDebit;
@@ -488,5 +507,3 @@ class CustomerController extends Controller
         return $entries;
     }
 }
-
-
