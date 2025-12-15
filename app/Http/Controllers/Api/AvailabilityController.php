@@ -29,7 +29,7 @@ class AvailabilityController extends Controller
             }))
             // exclude rooms that are currently checked in (regardless of dates)
             ->whereDoesntHave('reservations', function ($r) {
-                $r->where('reservations.status', 'checked_in');
+                $r->where('reservations.status', '!=', 'checked_out');
             });
             // exclude rooms that have overlapping active reservations (pending, confirmed)
             // ->whereDoesntHave('reservations', function ($r) use ($checkIn, $checkOut) {

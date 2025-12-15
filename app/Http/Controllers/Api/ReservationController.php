@@ -62,7 +62,12 @@ class ReservationController extends Controller
             $query->where('customer_id', $request->customer_id);
         }
 
-        // Date range filter
+        // Filter by reservation creation date (created_at) if provided
+        if ($request->has('created_at_date') && !empty($request->created_at_date)) {
+            $query->whereDate('created_at', $request->created_at_date);
+        }
+
+        // Date range filter based on check-in / check-out dates
         if ($request->has('date_from') && !empty($request->date_from) && 
             $request->has('date_to') && !empty($request->date_to)) {
             // Both dates provided: show reservations that overlap with the date range

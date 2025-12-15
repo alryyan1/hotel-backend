@@ -243,7 +243,7 @@ class PaymentController extends Controller
             'تاريخ الدفع: ' . date('d/m/Y H:i', strtotime($payment->created_at)),
             'طريقة الدفع: ' . ($methodLabels[$payment->method] ?? $payment->method),
             'المبلغ: ' . number_format($payment->amount, 0, '.', ',') . ' ',
-            'الحالة: ' . ($payment->status === 'completed' ? 'مكتمل' : $payment->status),
+            // 'الحالة: ' . ($payment->status === 'completedظ' ? 'مكتمل' : $payment->status),
         ];
 
         foreach ($paymentInfo as $info) {

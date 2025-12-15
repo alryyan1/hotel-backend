@@ -17,8 +17,9 @@ class DatabaseSeeder extends Seeder
      */
     public function run(): void
     {
-        // Seed default room statuses
+        // Seed default room statuses (including an 'empty' default status)
         DB::table('room_statuses')->insertOrIgnore([
+            ['code' => 'empty', 'name' => 'Empty', 'color' => '#9ca3af', 'created_at' => now(), 'updated_at' => now()],
             ['code' => 'cleaning', 'name' => 'Cleaning', 'color' => '#eab308', 'created_at' => now(), 'updated_at' => now()],
             ['code' => 'maintenance', 'name' => 'Maintenance', 'color' => '#3b82f6', 'created_at' => now(), 'updated_at' => now()],
         ]);
