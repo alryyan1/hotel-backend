@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Reservation;
 use App\Models\Room;
+use App\Models\Transaction;
 use App\Services\ReservationSmsService;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -31,7 +32,7 @@ class ReservationController extends Controller
      */
     public function index(Request $request)
     {
-        $query = Reservation::with(['customer', 'rooms', 'payments']);
+        $query = Reservation::with(['customer', 'rooms', 'transactions']);
 
         // Search functionality
         if ($request->has('search') && !empty($request->search)) {
@@ -168,6 +169,38 @@ class ReservationController extends Controller
 
         $reservation->rooms()->sync($syncData);
 
+        // Create a debit transaction for this reservation
+        $reservation->load(['rooms.type']);
+        $roomTypes = RoomType::all()->keyBy('id');
+        
+        $checkIn = new \DateTime($reservation->check_in_date);
+        $checkOut = new \DateTime($reservation->check_out_date);
+        $interval = $checkIn->diff($checkOut);
+        $days = max(1, $interval->days);
+
+        $totalDebit = 0;
+        foreach ($reservation->rooms as $room) {
+            // Get base price: first try room->type->base_price, then fallback to roomTypes lookup
+            // If a specific rate is provided on the pivot, use it; otherwise use room type base_price
+            $basePrice = $room->pivot->rate ?? (
+                ($room->type && $room->type->base_price)
+                    ? $room->type->base_price
+                    : ($roomTypes[$room->room_type_id]->base_price ?? 0)
+            );
+            $totalDebit += $days * $basePrice;
+        }
+
+        // Always create a transaction, even if amount is 0 (for consistency)
+        Transaction::create([
+            'customer_id' => $reservation->customer_id,
+            'reservation_id' => $reservation->id,
+            'type' => 'debit',
+            'amount' => $totalDebit,
+            'currency' => 'USD',
+            'transaction_date' => $reservation->check_in_date,
+            'reference' => 'RES-' . $reservation->id,
+        ]);
+
         // Send SMS notification
         $smsResult = null;
         try {
@@ -191,7 +224,7 @@ class ReservationController extends Controller
             ];
         }
 
-        $responseData = $reservation->load(['customer','rooms','payments']);
+        $responseData = $reservation->load(['customer','rooms','transactions']);
         $responseData->sms_result = $smsResult;
 
         return response()->json($responseData, 201);
@@ -202,7 +235,7 @@ class ReservationController extends Controller
      */
     public function show(Reservation $reservation)
     {
-        return response()->json($reservation->load(['customer','rooms','payments']));
+        return response()->json($reservation->load(['customer','rooms','transactions']));
     }
 
     /**
@@ -274,7 +307,7 @@ class ReservationController extends Controller
             $reservation->rooms()->sync($syncData);
         }
 
-        return response()->json($reservation->load(['customer','rooms','payments']));
+        return response()->json($reservation->load(['customer','rooms','transactions']));
     }
 
     /**
@@ -331,7 +364,7 @@ class ReservationController extends Controller
         // Update reservation status to checked_in
         $reservation->update(['status' => 'checked_in']);
 
-        return response()->json($reservation->fresh()->load(['customer', 'rooms', 'payments']));
+        return response()->json($reservation->fresh()->load(['customer', 'rooms', 'transactions']));
     }
 
     public function checkOut(Reservation $reservation)
@@ -354,7 +387,7 @@ class ReservationController extends Controller
             $reservation->update(['status' => 'checked_out']);
         });
 
-        return response()->json($reservation->fresh()->load(['customer', 'rooms', 'payments']));
+        return response()->json($reservation->fresh()->load(['customer', 'rooms', 'transactions']));
     }
 
     public function cancel(Reservation $reservation)
@@ -371,7 +404,7 @@ class ReservationController extends Controller
      */
     public function exportExcel(Request $request): StreamedResponse
     {
-        $query = Reservation::with(['customer', 'rooms', 'payments']);
+        $query = Reservation::with(['customer', 'rooms', 'transactions']);
 
         // Apply the same filters as index method
         if ($request->has('search') && !empty($request->search)) {
@@ -660,7 +693,7 @@ class ReservationController extends Controller
     public function exportInvoicePdf(Reservation $reservation): Response
     {
         // Load reservation with relations
-        $reservation->load(['customer', 'rooms.type', 'payments']);
+        $reservation->load(['customer', 'rooms.type', 'transactions']);
 
         // Get room types for pricing
         $roomTypes = RoomType::all()->keyBy('id');
@@ -824,8 +857,10 @@ class ReservationController extends Controller
         $pdf->Cell($totalColSpan, 8, 'الإجمالي', 1, 0, 'R', true);
         $pdf->Cell($colTotal, 8, number_format($totalAmount, 0, '.', ','), 1, 1, 'C', true);
 
-        // Calculate paid amount
-        $paidAmount = $reservation->payments->sum('amount');
+        // Calculate paid amount from credit transactions
+        $paidAmount = $reservation->transactions()
+            ->where('type', 'credit')
+            ->sum('amount');
         $remainingAmount = $totalAmount - $paidAmount;
 
         $pdf->Ln(5);

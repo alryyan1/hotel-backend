@@ -154,24 +154,16 @@ class CustomerController extends Controller
 
     public function getBalance(Customer $customer): JsonResponse
     {
-        // Load customer with relations
-        $customer->load(['reservations.rooms.type', 'payments']);
-
-        // Get room types for pricing
-        $roomTypes = RoomType::all()->keyBy('id');
-
-        // Calculate ledger entries
-        $ledgerEntries = $this->calculateLedger($customer->reservations, $customer->payments, $roomTypes);
-
-        // Calculate total debit and credit
-        $totalDebit = 0;
-        $totalCredit = 0;
-
-        foreach ($ledgerEntries as $entry) {
-            $totalDebit += $entry['debit'];
-            $totalCredit += $entry['credit'];
-        }
-
+        $customer->load('transactions');
+        
+        $totalDebit = $customer->transactions()
+            ->where('type', 'debit')
+            ->sum('amount');
+        
+        $totalCredit = $customer->transactions()
+            ->where('type', 'credit')
+            ->sum('amount');
+        
         $balance = $totalDebit - $totalCredit;
 
         return response()->json([
@@ -181,16 +173,35 @@ class CustomerController extends Controller
         ]);
     }
 
+    public function getLedger(Customer $customer): JsonResponse
+    {
+        // Load customer with transactions and related reservations/rooms
+        $customer->load(['transactions.reservation.rooms.type']);
+        
+        // Get room types for pricing (for backward compatibility if needed)
+        $roomTypes = RoomType::all()->keyBy('id');
+        
+        // Calculate ledger entries from transactions
+        $ledgerEntries = $this->calculateLedgerFromTransactions($customer->transactions, $roomTypes);
+        
+        return response()->json([
+            'ledger_entries' => $ledgerEntries,
+            'total_debit' => array_sum(array_column($ledgerEntries, 'debit')),
+            'total_credit' => array_sum(array_column($ledgerEntries, 'credit')),
+            'final_balance' => end($ledgerEntries)['balance'] ?? 0,
+        ]);
+    }
+
     public function exportLedgerPdf(Customer $customer): Response
     {
-        // Load customer with relations
-        $customer->load(['reservations.rooms.type', 'payments']);
+        // Load customer with transactions and related reservations/rooms
+        $customer->load(['transactions.reservation.rooms.type']);
 
-        // Get room types for pricing
+        // Get room types for pricing (for backward compatibility if needed)
         $roomTypes = RoomType::all()->keyBy('id');
 
-        // Calculate ledger entries
-        $ledgerEntries = $this->calculateLedger($customer->reservations, $customer->payments, $roomTypes);
+        // Calculate ledger entries from transactions
+        $ledgerEntries = $this->calculateLedgerFromTransactions($customer->transactions, $roomTypes);
 
         // Create PDF with RTL support
         $pdf = new \TCPDF('P', 'mm', 'A4', true, 'UTF-8', false);
@@ -417,34 +428,13 @@ class CustomerController extends Controller
             ->header('Content-Disposition', 'attachment; filename="' . $filename . '"');
     }
 
-    private function calculateLedger($reservations, $payments, $roomTypes): array
+    private function calculateLedgerFromTransactions($transactions, $roomTypes): array
     {
         $entries = [];
         $runningBalance = 0;
 
-        // Combine reservations and payments, then sort by date
-        $allEntries = [];
-
-        foreach ($reservations as $reservation) {
-            $allEntries[] = [
-                'type' => 'reservation',
-                'data' => $reservation,
-                'date' => $reservation->check_in_date
-            ];
-        }
-
-        foreach ($payments as $payment) {
-            $allEntries[] = [
-                'type' => 'payment',
-                'data' => $payment,
-                'date' => $payment->created_at
-            ];
-        }
-
-        // Sort by date
-        usort($allEntries, function ($a, $b) {
-            return strtotime($a['date']) - strtotime($b['date']);
-        });
+        // Sort transactions by transaction_date
+        $sortedTransactions = $transactions->sortBy('transaction_date');
 
         $methodLabels = [
             'cash' => 'نقدي',
@@ -453,52 +443,64 @@ class CustomerController extends Controller
             'fawri' => 'فوري'
         ];
 
-        foreach ($allEntries as $entry) {
-            if ($entry['type'] === 'reservation') {
-                $reservation = $entry['data'];
-                $checkIn = new \DateTime($reservation->check_in_date);
-                $checkOut = new \DateTime($reservation->check_out_date);
-                $interval = $checkIn->diff($checkOut);
-                $days = max(1, $interval->days);
+        foreach ($sortedTransactions as $transaction) {
+            if ($transaction->type === 'debit') {
+                // Debit transaction (reservation)
+                $reservation = $transaction->reservation;
+                
+                if ($reservation) {
+                    $checkIn = new \DateTime($reservation->check_in_date);
+                    $checkOut = new \DateTime($reservation->check_out_date);
+                    $interval = $checkIn->diff($checkOut);
+                    $days = max(1, $interval->days);
 
-                $totalDebit = 0;
-                $roomNames = [];
+                    $roomNames = [];
+                    foreach ($reservation->rooms as $room) {
+                        $roomNames[] = 'غرفة ' . $room->number;
+                    }
 
-                foreach ($reservation->rooms as $room) {
-                    $basePrice = ($room->type && $room->type->base_price)
-                        ? $room->type->base_price
-                        : ($roomTypes[$room->room_type_id]->base_price ?? 0);
-                    $roomDebit = $days * $basePrice;
-                    $totalDebit += $roomDebit;
-                    $roomNames[] = 'غرفة ' . $room->number;
+                    $runningBalance += $transaction->amount;
+
+                    $entries[] = [
+                        'id' => $transaction->id,
+                        'reservation_id' => $reservation->id,
+                        'type' => 'reservation',
+                        'date' => date('d/m/Y', strtotime($transaction->transaction_date)),
+                        'description' => 'حجز #' . $reservation->id . ' - ' . implode(', ', $roomNames),
+                        'rooms' => implode(', ', $roomNames),
+                        'days' => $days,
+                        'debit' => $transaction->amount,
+                        'credit' => 0,
+                        'balance' => $runningBalance
+                    ];
+                } else {
+                    // Debit without reservation (shouldn't happen normally, but handle gracefully)
+                    $runningBalance += $transaction->amount;
+                    $entries[] = [
+                        'id' => $transaction->id,
+                        'type' => 'reservation',
+                        'date' => date('d/m/Y', strtotime($transaction->transaction_date)),
+                        'description' => $transaction->notes ?? 'حجز',
+                        'rooms' => '-',
+                        'days' => null,
+                        'debit' => $transaction->amount,
+                        'credit' => 0,
+                        'balance' => $runningBalance
+                    ];
                 }
-
-                $runningBalance += $totalDebit;
-
-                $entries[] = [
-                    'id' => $reservation->id,
-                    'type' => 'reservation',
-                    'date' => date('d/m/Y', strtotime($reservation->check_in_date)),
-                    'description' => 'حجز #' . $reservation->id . ' - ' . implode(', ', $roomNames),
-                    'rooms' => implode(', ', $roomNames),
-                    'days' => $days,
-                    'debit' => $totalDebit,
-                    'credit' => 0,
-                    'balance' => $runningBalance
-                ];
             } else {
-                $payment = $entry['data'];
-                $runningBalance -= $payment->amount;
+                // Credit transaction (payment)
+                $runningBalance -= $transaction->amount;
 
                 $entries[] = [
-                    'id' => $payment->id,
+                    'id' => $transaction->id,
                     'type' => 'payment',
-                    'date' => date('d/m/Y', strtotime($payment->created_at)),
-                    'description' => 'دفعة - ' . ($payment->reference ?? ''),
-                    'paymentMethod' => $methodLabels[$payment->method] ?? $payment->method,
+                    'date' => date('d/m/Y', strtotime($transaction->transaction_date)),
+                    'description' => 'دفعة - ' . ($transaction->reference ?? ''),
+                    'paymentMethod' => $methodLabels[$transaction->method] ?? $transaction->method ?? '',
                     'days' => null,
                     'debit' => 0,
-                    'credit' => $payment->amount,
+                    'credit' => $transaction->amount,
                     'balance' => $runningBalance
                 ];
             }

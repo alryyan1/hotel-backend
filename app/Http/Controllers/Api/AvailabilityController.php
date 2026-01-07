@@ -18,37 +18,64 @@ class AvailabilityController extends Controller
             'guest_count' => ['nullable', 'integer', 'min:1'],
         ]);
 
-        $checkIn = $data['check_in_date'];
-        $checkOut = $data['check_out_date'];
+        $checkIn = Carbon::parse($data['check_in_date']);
+        $checkOut = Carbon::parse($data['check_out_date']);
+        $days = max(1, $checkIn->diffInDays($checkOut));
 
         $query = Room::query()
-            ->with(['type', 'status', 'floor'])
+            ->with(['type', 'status', 'floor', 'reservations' => function ($q) {
+                $q->where('status', '!=', 'checked_out')
+                  ->with('customer:id,name')
+                  ->orderBy('check_out_date', 'desc');
+            }])
             ->when(isset($data['room_type_id']), fn($q) => $q->where('room_type_id', $data['room_type_id']))
             ->when(isset($data['guest_count']), fn($q) => $q->whereHas('type', function ($t) use ($data) {
                 $t->where('capacity', '>=', $data['guest_count']);
-            }))
-            // exclude rooms that are currently checked in (regardless of dates)
-            ->whereDoesntHave('reservations', function ($r) {
-                $r->where('reservations.status', '!=', 'checked_out');
-            });
-            // exclude rooms that have overlapping active reservations (pending, confirmed)
-            // ->whereDoesntHave('reservations', function ($r) use ($checkIn, $checkOut) {
-            //     $r->whereIn('reservations.status', ['pending', 'confirmed'])
-            //         ->where(function ($rr) use ($checkIn, $checkOut) {
-            //             $rr->where(function ($p) use ($checkIn, $checkOut) {
-            //                 $p->where('reservation_room.check_in_date', '<', $checkOut)
-            //                     ->where('reservation_room.check_out_date', '>', $checkIn);
-            //             })->orWhere(function ($p) use ($checkIn, $checkOut) {
-            //                 // fallback to reservation dates if pivot dates null
-            //                 $p->whereNull('reservation_room.check_in_date')
-            //                     ->whereNull('reservation_room.check_out_date')
-            //                     ->where('reservations.check_in_date', '<', $checkOut)
-            //                     ->where('reservations.check_out_date', '>', $checkIn);
-            //             });
-            //         });
-            // });
+            }));
 
-        $rooms = $query->paginate(20);
-        return response()->json($rooms);
+        $rooms = $query->get();
+
+        // Transform rooms to include occupancy info and pricing
+        $transformedRooms = $rooms->map(function ($room) use ($checkIn, $checkOut, $days) {
+            // Find current active reservation
+            $currentReservation = $room->reservations
+                ->where('status', '!=', 'checked_out')
+                ->first();
+
+            $isOccupied = $currentReservation !== null;
+            
+            // Get room rate (from pivot if exists, otherwise use base_price)
+            $basePrice = $room->type->base_price ?? 0;
+            $rate = $basePrice; // Default to base_price, can be overridden by pivot rate if needed
+            $totalPrice = $rate * $days;
+
+            $roomData = [
+                'id' => $room->id,
+                'number' => $room->number,
+                'type' => $room->type,
+                'floor' => $room->floor,
+                'status' => $room->status,
+                'is_occupied' => $isOccupied,
+                'base_price' => $basePrice,
+                'rate' => $rate,
+                'total_price' => $totalPrice,
+                'current_reservation' => null,
+            ];
+
+            if ($isOccupied && $currentReservation) {
+                $roomData['current_reservation'] = [
+                    'id' => $currentReservation->id,
+                    'customer_name' => $currentReservation->customer->name ?? 'غير معروف',
+                    'check_out_date' => $currentReservation->check_out_date,
+                ];
+            }
+
+            return $roomData;
+        });
+
+        return response()->json([
+            'data' => $transformedRooms,
+            'total' => $transformedRooms->count(),
+        ]);
     }
 }

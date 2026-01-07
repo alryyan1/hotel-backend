@@ -57,8 +57,16 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('customers/{customer}/payments', [\App\Http\Controllers\Api\PaymentController::class, 'getCustomerPayments']);
     Route::get('payments/{payment}/invoice/pdf', [\App\Http\Controllers\Api\PaymentController::class, 'exportInvoicePdf']);
 
+    // Transactions
+    Route::apiResource('transactions', \App\Http\Controllers\Api\TransactionController::class);
+    Route::get('customers/{customer}/transactions', [\App\Http\Controllers\Api\TransactionController::class, 'getCustomerTransactions']);
+    Route::get('transactions/{transaction}/invoice/pdf', [\App\Http\Controllers\Api\TransactionController::class, 'exportInvoicePdf']);
+
     // Customer Balance
     Route::get('customers/{customer}/balance', [\App\Http\Controllers\Api\CustomerController::class, 'getBalance']);
+    
+    // Customer Ledger
+    Route::get('customers/{customer}/ledger', [\App\Http\Controllers\Api\CustomerController::class, 'getLedger']);
     
     // Customer PDF Export
     Route::get('customers/{customer}/ledger/pdf', [\App\Http\Controllers\Api\CustomerController::class, 'exportLedgerPdf']);
@@ -98,4 +106,11 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('cleaning-notifications/{cleaningNotification}', [\App\Http\Controllers\Api\CleaningNotificationController::class, 'show']);
     Route::post('cleaning-notifications/{cleaningNotification}/complete', [\App\Http\Controllers\Api\CleaningNotificationController::class, 'complete']);
     Route::post('cleaning-notifications/{cleaningNotification}/dismiss', [\App\Http\Controllers\Api\CleaningNotificationController::class, 'dismiss']);
+
+    // Accounting
+    Route::get('accounting/summary', [\App\Http\Controllers\Api\AccountingController::class, 'getSummary']);
+    Route::get('accounting/transactions', [\App\Http\Controllers\Api\AccountingController::class, 'getTransactions']);
+    Route::get('accounting/customer-balances', [\App\Http\Controllers\Api\AccountingController::class, 'getCustomerBalances']);
+    Route::get('accounting/report/pdf', [\App\Http\Controllers\Api\AccountingController::class, 'exportReportPdf']);
+    Route::get('accounting/report/excel', [\App\Http\Controllers\Api\AccountingController::class, 'exportReportExcel']);
 });
