@@ -361,6 +361,45 @@ class ReservationController extends Controller
             return response()->json(['message' => 'Reservation must be confirmed to check in'], 422);
         }
 
+        // Check if any rooms are already occupied by reservations with status 'checked_in'
+        // Only prevent check-in if there's a conflicting reservation with status 'checked_in'
+        // Allow check-in even if there are pending/confirmed reservations for the same room
+        $reservation->load('rooms');
+        $occupiedRooms = [];
+        
+        foreach ($reservation->rooms as $room) {
+            // Find other reservations that have this room and status is 'checked_in'
+            $conflictingReservation = \App\Models\Reservation::query()
+                ->where('id', '!=', $reservation->id)
+                ->where('status', 'checked_in') // Only check for checked_in status
+                ->whereHas('rooms', function ($q) use ($room) {
+                    $q->where('rooms.id', $room->id);
+                })
+                ->with('customer:id,name')
+                ->first();
+            
+            if ($conflictingReservation) {
+                $occupiedRooms[] = [
+                    'room_id' => $room->id,
+                    'room_number' => $room->number,
+                    'conflicting_reservation' => [
+                        'id' => $conflictingReservation->id,
+                        'customer_name' => $conflictingReservation->customer->name ?? 'غير معروف',
+                        'check_in_date' => $conflictingReservation->check_in_date,
+                        'check_out_date' => $conflictingReservation->check_out_date,
+                        'status' => $conflictingReservation->status,
+                    ],
+                ];
+            }
+        }
+        
+        if (!empty($occupiedRooms)) {
+            return response()->json([
+                'message' => 'Cannot check in: Some rooms are already occupied',
+                'occupied_rooms' => $occupiedRooms,
+            ], 422);
+        }
+
         // Update reservation status to checked_in
         $reservation->update(['status' => 'checked_in']);
 
