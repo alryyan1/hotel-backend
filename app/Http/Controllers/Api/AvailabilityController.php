@@ -24,7 +24,7 @@ class AvailabilityController extends Controller
 
         $query = Room::query()
             ->with(['type', 'status', 'floor', 'reservations' => function ($q) {
-                $q->where('status', '!=', 'checked_out')
+                $q->whereNotIn('status', ['checked_out', 'cancelled'])
                   ->with('customer:id,name')
                   ->orderBy('check_out_date', 'desc');
             }])
@@ -39,7 +39,7 @@ class AvailabilityController extends Controller
         $transformedRooms = $rooms->map(function ($room) use ($checkIn, $checkOut, $days) {
             // Find current active reservation
             $currentReservation = $room->reservations
-                ->where('status', '!=', 'checked_out')
+                ->whereNotIn('status', ['checked_out', 'cancelled'])
                 ->first();
 
             $isOccupied = $currentReservation !== null;
