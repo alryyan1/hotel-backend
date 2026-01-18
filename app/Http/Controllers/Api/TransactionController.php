@@ -62,7 +62,7 @@ class TransactionController extends Controller
 
             // Set default currency if not provided
             if (!isset($validated['currency'])) {
-                $validated['currency'] = 'USD';
+                $validated['currency'] = 'SDG';
             }
 
             // Always create credit transactions from this endpoint
@@ -124,13 +124,13 @@ class TransactionController extends Controller
             if (isset($validated['amount']) && $transaction->type === 'credit') {
                 $customerBalanceService = new CustomerBalanceService();
                 $customer = $transaction->customer;
-                
+
                 // Calculate current balance excluding this transaction
                 $currentBalance = $customerBalanceService->calculate($customer);
-                
+
                 // Remove the old transaction amount from balance calculation
                 $balanceWithoutThisTransaction = $currentBalance['balance'] + $transaction->amount;
-                
+
                 // Check if new amount exceeds available balance
                 if ($validated['amount'] > $balanceWithoutThisTransaction) {
                     return response()->json([
@@ -361,5 +361,3 @@ class TransactionController extends Controller
             ->header('Content-Disposition', 'attachment; filename=\"' . $filename . '\"');
     }
 }
-
-

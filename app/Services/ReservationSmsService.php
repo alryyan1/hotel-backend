@@ -23,7 +23,7 @@ class ReservationSmsService
     {
         $customer = $reservation->customer;
         $hotelSettings = HotelSetting::first();
-        
+
         if (!$customer || !$customer->phone) {
             return [
                 'success' => false,
@@ -33,8 +33,8 @@ class ReservationSmsService
 
         $hotelName = $hotelSettings?->official_name ?? $hotelSettings?->trade_name ?? 'فندقنا';
         $reservationId = $reservation->id;
-        $checkInDate = Carbon::parse($reservation->check_in_date)->format('Y-m-d');
-        $checkOutDate = Carbon::parse($reservation->check_out_date)->format('Y-m-d');
+        $checkInDate = Carbon::parse($reservation->check_in_date)->format('d/m/Y');
+        $checkOutDate = Carbon::parse($reservation->check_out_date)->format('d/m/Y');
 
         $message = $this->buildReservationCreationMessage(
             $hotelName,
@@ -53,7 +53,7 @@ class ReservationSmsService
     {
         $customer = $reservation->customer;
         $hotelSettings = HotelSetting::first();
-        
+
         if (!$customer || !$customer->phone) {
             return [
                 'success' => false,
@@ -63,8 +63,8 @@ class ReservationSmsService
 
         $hotelName = $hotelSettings?->official_name ?? $hotelSettings?->trade_name ?? 'فندقنا';
         $reservationId = $reservation->id;
-        $checkInDate = Carbon::parse($reservation->check_in_date)->format('Y-m-d');
-        $checkOutDate = Carbon::parse($reservation->check_out_date)->format('Y-m-d');
+        $checkInDate = Carbon::parse($reservation->check_in_date)->format('d/m/Y');
+        $checkOutDate = Carbon::parse($reservation->check_out_date)->format('d/m/Y');
 
         $message = $this->buildReservationConfirmationMessage(
             $hotelName,
@@ -85,12 +85,20 @@ class ReservationSmsService
         string $checkInDate,
         string $checkOutDate
     ): string {
-        return "مرحبًا بك في فندق {$hotelName} 🌿
-تم تسجيل حجزك بنجاح، ويسعدنا اختيارك لنا.
-رقم الحجز: {$reservationId}
-تاريخ الوصول: {$checkInDate}
-تاريخ المغادرة: {$checkOutDate}
-نتمنى لك إقامة مريحة وتجربة رائعة معنا.";
+        $mapLink = "https://maps.app.goo.gl/jYAhKEEzNXbUPSya8?g_st=aw";
+        $alrawdaMapLink = "https://maps.app.goo.gl/7JiTnwK2gPbSXXEd6?g_st=aw";
+        return "تأكيد استضافة | NOVA SUITES 🌿
+إلى ضيفنا الموقر.. بكل حفاوة، نؤكد جاهزية \"نوفا سويتس\" لاستقبالكم. نحن هنا لنصنع لكم إقامة تليق بمقامكم، حيث تتجسد الرفاهية والخصوصية في أبهى صورها.
+
+بيانات التشريف: 🗓️ تاريخ الوصول: {$checkInDate} 🗓️ تاريخ المغادرة: {$checkOutDate} 🔢 الحجز رقم: #{$reservationId}
+
+📍 وجهتكم المختارة:
+✨ فرع النسمة (إطلالة النيل):
+{$mapLink}
+✨ فرع الروضة (القلب النابض):
+{$alrawdaMapLink}
+
+في \"نوفا سويتس\".. لا نكتفي بالاستضافة، بل نصمم لكم ذكريات لا تُنسى. نتطلع لاستقبالكم بكل مودة";
     }
 
     /**
@@ -102,11 +110,20 @@ class ReservationSmsService
         string $checkInDate,
         string $checkOutDate
     ): string {
-        return "تم تأكيد حجزك بنجاح في فندق {$hotelName}.
-رقم الحجز: {$reservationId}
-تاريخ الوصول: {$checkInDate}
-تاريخ المغادرة: {$checkOutDate}
-نحن بانتظارك ونتمنى لك إقامة ممتعة. 🌿";
+        $mapLink = "https://maps.app.goo.gl/jYAhKEEzNXbUPSya8?g_st=aw";
+        $alrawdaMapLink = "https://maps.app.goo.gl/7JiTnwK2gPbSXXEd6?g_st=aw";
+        return "تأكيد استضافة | NOVA SUITES 🌿
+إلى ضيفنا الموقر.. بكل حفاوة، نؤكد جاهزية \"نوفا سويتس\" لاستقبالكم. نحن هنا لنصنع لكم إقامة تليق بمقامكم، حيث تتجسد الرفاهية والخصوصية في أبهى صورها.
+
+بيانات التشريف: 🗓️ تاريخ الوصول: {$checkInDate} 🗓️ تاريخ المغادرة: {$checkOutDate} 🔢 الحجز رقم: #{$reservationId}
+
+📍 وجهتكم المختارة:
+✨ فرع النسمة (إطلالة النيل):
+{$mapLink}
+✨ فرع الروضة (القلب النابض):
+{$alrawdaMapLink}
+
+في \"نوفا سويتس\".. لا نكتفي بالاستضافة، بل نصمم لكم ذكريات لا تُنسى. نتطلع لاستقبالكم بكل مودة";
     }
 
     /**
@@ -115,14 +132,14 @@ class ReservationSmsService
     public function sendBulkReservationConfirmations(array $reservations): array
     {
         $messages = [];
-        
+
         foreach ($reservations as $reservation) {
             if ($reservation instanceof Reservation && $reservation->customer?->phone) {
                 $hotelSettings = HotelSetting::first();
                 $hotelName = $hotelSettings?->official_name ?? $hotelSettings?->trade_name ?? 'فندقنا';
                 $reservationId = $reservation->id;
-                $checkInDate = Carbon::parse($reservation->check_in_date)->format('Y-m-d');
-                $checkOutDate = Carbon::parse($reservation->check_out_date)->format('Y-m-d');
+                $checkInDate = Carbon::parse($reservation->check_in_date)->format('d/m/Y');
+                $checkOutDate = Carbon::parse($reservation->check_out_date)->format('d/m/Y');
 
                 $message = $this->buildReservationConfirmationMessage(
                     $hotelName,

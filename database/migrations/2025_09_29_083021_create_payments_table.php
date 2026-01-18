@@ -15,10 +15,10 @@ return new class extends Migration
             $table->id();
             $table->foreignId('reservation_id')->constrained('reservations')->cascadeOnUpdate()->restrictOnDelete();
             $table->string('reference')->unique();
-            $table->enum('method', ['cash','card','transfer','online']);
+            $table->enum('method', ['cash', 'card', 'transfer', 'online']);
             $table->decimal('amount', 10, 2);
-            $table->string('currency', 3)->default('USD');
-            $table->enum('status', ['pending','completed','failed','refunded'])->default('completed');
+            $table->string('currency', 3)->default('SDG');
+            $table->enum('status', ['pending', 'completed', 'failed', 'refunded'])->default('completed');
             $table->text('notes')->nullable();
             $table->timestamps();
         });

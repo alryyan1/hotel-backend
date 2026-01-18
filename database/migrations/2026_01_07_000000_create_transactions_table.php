@@ -24,7 +24,7 @@ return new class extends Migration
                 ->restrictOnDelete();
             $table->enum('type', ['debit', 'credit']);
             $table->decimal('amount', 10, 2);
-            $table->string('currency', 3)->default('USD');
+            $table->string('currency', 3)->default('SDG');
             $table->enum('method', ['cash', 'bankak', 'Ocash', 'fawri'])->nullable();
             $table->string('reference')->nullable()->unique();
             $table->text('notes')->nullable();
@@ -41,5 +41,3 @@ return new class extends Migration
         Schema::dropIfExists('transactions');
     }
 };
-
-

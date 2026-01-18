@@ -17,7 +17,13 @@ class CustomerController extends Controller
 {
     public function index(Request $request): JsonResponse
     {
-        $query = Customer::query();
+        $query = Customer::query()
+            ->withSum(['transactions as total_debit' => function ($query) {
+                $query->where('type', 'debit');
+            }], 'amount')
+            ->withSum(['transactions as total_credit' => function ($query) {
+                $query->where('type', 'credit');
+            }], 'amount');
 
         // Search functionality
         if ($request->has('search') && $request->get('search')) {
@@ -29,7 +35,7 @@ class CustomerController extends Controller
             });
         }
 
-        $perPage = min($request->get('per_page', 20), 100);
+        $perPage = min((int) $request->get('per_page', 20), 100);
         $customers = $query->orderByDesc('id')->paginate($perPage);
         return response()->json($customers);
     }
@@ -155,15 +161,15 @@ class CustomerController extends Controller
     public function getBalance(Customer $customer): JsonResponse
     {
         $customer->load('transactions');
-        
+
         $totalDebit = $customer->transactions()
             ->where('type', 'debit')
             ->sum('amount');
-        
+
         $totalCredit = $customer->transactions()
             ->where('type', 'credit')
             ->sum('amount');
-        
+
         $balance = $totalDebit - $totalCredit;
 
         return response()->json([
@@ -177,13 +183,13 @@ class CustomerController extends Controller
     {
         // Load customer with transactions and related reservations/rooms
         $customer->load(['transactions.reservation.rooms.type']);
-        
+
         // Get room types for pricing (for backward compatibility if needed)
         $roomTypes = RoomType::all()->keyBy('id');
-        
+
         // Calculate ledger entries from transactions
         $ledgerEntries = $this->calculateLedgerFromTransactions($customer->transactions, $roomTypes);
-        
+
         return response()->json([
             'ledger_entries' => $ledgerEntries,
             'total_debit' => array_sum(array_column($ledgerEntries, 'debit')),
@@ -257,7 +263,6 @@ class CustomerController extends Controller
                     $pdf->Image($logoImagePath, $xPos, $yPos, $logoWidthMM, $logoHeightMM, 'PNG', '', '', false, 300, '', false, false, 0, false, false, false);
 
                     // Re-enable RTL
-                    $pdf->setRTL(true);
 
                     // Move Y position down after logo
                     $pdf->SetY($yPos + $logoHeightMM + 5);
@@ -268,6 +273,7 @@ class CustomerController extends Controller
             }
         }
 
+        $pdf->setRTL(true);
         // Calculate available width (A4 width = 210mm, minus margins)
         $availableWidth = $pageWidth - $leftMargin - $rightMargin; // 180mm
 
@@ -341,7 +347,7 @@ class CustomerController extends Controller
             // RTL order: Date, Description, Details, Days, Debit, Credit, Balance
             $pdf->Cell($colDate, 7, $entry['date'], 1, 0, 'C');             // 1. Far Right
 
-            $pdf->Cell($colDescription, 7, $entry['description'], 1, 0, 'R'); // 2. (Right align for description text)
+            $pdf->Cell($colDescription, 7, $entry['description'], 1, 0, 'C'); // 2. (Right align for description text)
 
             $details = $entry['type'] === 'reservation'
                 ? ($entry['rooms'] ?? '')
@@ -369,10 +375,10 @@ class CustomerController extends Controller
         $totalColSpan = $colDate + $colDescription + $colDetails + $colDays; // 22+51+34+17 = 124
         $finalBalance = $totalDebit - $totalCredit;
 
-        $pdf->Cell($colBalance, 8, number_format($finalBalance, 0, '.', ','), 1, 0, 'C', true);
-        $pdf->Cell($colCredit, 8, number_format($totalCredit, 0, '.', ','), 1, 0, 'C', true);
+        $pdf->Cell($totalColSpan, 8, 'الإجمالي', 1, 0, 'C', true);
         $pdf->Cell($colDebit, 8, number_format($totalDebit, 0, '.', ','), 1, 0, 'C', true);
-        $pdf->Cell($totalColSpan, 8, 'الإجمالي', 1, 1, 'C', true);
+        $pdf->Cell($colCredit, 8, number_format($totalCredit, 0, '.', ','), 1, 0, 'C', true);
+        $pdf->Cell($colBalance, 8, number_format($finalBalance, 0, '.', ','), 1, 1, 'C', true);
 
         $pdf->Ln(5);
 
@@ -433,8 +439,8 @@ class CustomerController extends Controller
         $entries = [];
         $runningBalance = 0;
 
-        // Sort transactions by transaction_date
-        $sortedTransactions = $transactions->sortBy('transaction_date');
+        // Sort transactions by ID (insertion order)
+        $sortedTransactions = $transactions->sortBy('id');
 
         $methodLabels = [
             'cash' => 'نقدي',
@@ -447,7 +453,7 @@ class CustomerController extends Controller
             if ($transaction->type === 'debit') {
                 // Debit transaction (reservation)
                 $reservation = $transaction->reservation;
-                
+
                 if ($reservation) {
                     $checkIn = new \DateTime($reservation->check_in_date);
                     $checkOut = new \DateTime($reservation->check_out_date);

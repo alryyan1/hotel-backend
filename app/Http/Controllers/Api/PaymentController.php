@@ -49,7 +49,7 @@ class PaymentController extends Controller
                 'reservation_id' => 'nullable|exists:reservations,id',
                 'method' => 'required|in:cash,bankak,Ocash,fawri',
                 'amount' => 'required|numeric|min:0.01',
-                'currency' => 'nullable|string|size:3|default:USD',
+                'currency' => 'nullable|string|size:3|default:SDG',
                 'status' => 'nullable|in:pending,completed,failed,refunded|default:completed',
                 'notes' => 'nullable|string',
                 'reference' => 'nullable|string|unique:payments,reference',
@@ -62,7 +62,7 @@ class PaymentController extends Controller
 
             // Set default currency if not provided
             if (!isset($validated['currency'])) {
-                $validated['currency'] = 'USD';
+                $validated['currency'] = 'SDG';
             }
 
             // Set default status if not provided
@@ -72,7 +72,7 @@ class PaymentController extends Controller
             $customerBalanceService = new CustomerBalanceService();
             $currentBalance = $customerBalanceService->calculate(Customer::find($validated['customer_id']));
             // Check customer balance before creating payment
-            
+
             // Check if payment amount exceeds balance
             if ($validated['amount'] > $currentBalance['balance']) {
                 return response()->json([
@@ -144,7 +144,7 @@ class PaymentController extends Controller
             ->with(['reservation'])
             ->orderBy('created_at', 'desc')
             ->get();
-        
+
         return response()->json($payments);
     }
 

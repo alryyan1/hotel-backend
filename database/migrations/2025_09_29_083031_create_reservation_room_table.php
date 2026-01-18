@@ -18,7 +18,7 @@ return new class extends Migration
             $table->date('check_in_date');
             $table->date('check_out_date');
             $table->decimal('rate', 10, 2)->nullable();
-            $table->string('currency', 3)->default('USD');
+            $table->string('currency', 3)->default('SDG');
             $table->unique(['reservation_id', 'room_id'], 'reservation_room_unique');
             $table->timestamps();
         });

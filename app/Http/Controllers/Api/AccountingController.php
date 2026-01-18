@@ -61,7 +61,17 @@ class AccountingController extends Controller
             ->sum('amount');
 
         // Total expenses (costs)
-        $totalExpenses = (float) $costQuery->sum('amount');
+        $totalExpenses = (float) $costQuery->clone()->sum('amount');
+
+        // Payment method breakdown for expenses
+        $expensesByMethod = $costQuery->clone()
+            ->select('payment_method', DB::raw('SUM(amount) as total'))
+            ->groupBy('payment_method')
+            ->get()
+            ->mapWithKeys(function ($item) {
+                return [$item->payment_method ?: 'unknown' => (float) $item->total];
+            })
+            ->toArray();
 
         // Net profit (revenue - expenses)
         $netProfit = $totalRevenue - $totalExpenses;
@@ -71,6 +81,7 @@ class AccountingController extends Controller
             'revenue_by_method' => $revenueByMethod,
             'total_debits' => $totalDebits,
             'total_expenses' => $totalExpenses,
+            'expenses_by_method' => $expensesByMethod,
             'net_profit' => $netProfit,
             'date_from' => $dateFrom,
             'date_to' => $dateTo,
@@ -145,15 +156,15 @@ class AccountingController extends Controller
         // Calculate balances for each customer
         $customers->getCollection()->transform(function ($customer) {
             $customer->load('transactions');
-            
+
             $totalDebit = (float) $customer->transactions()
                 ->where('type', 'debit')
                 ->sum('amount');
-            
+
             $totalCredit = (float) $customer->transactions()
                 ->where('type', 'credit')
                 ->sum('amount');
-            
+
             $balance = $totalDebit - $totalCredit;
 
             return [
@@ -309,18 +320,25 @@ class AccountingController extends Controller
             $pdf->Cell($colType, 7, 'النوع', 1, 0, 'C', true);
             $pdf->Cell($colCustomer, 7, 'العميل', 1, 0, 'C', true);
             $pdf->Cell($colAmount, 7, 'المبلغ', 1, 0, 'C', true);
-            $pdf->Cell($colMethod, 7, 'الطريقة', 1, 0, 'C', true);
-            $pdf->Cell($colRef, 7, 'المرجع', 1, 1, 'C', true);
+            $pdf->Cell($colMethod, 7, 'الطريقة', 1, 1, 'C', true);
+            // $pdf->Cell($colRef, 7, 'المرجع', 1, 1, 'C', true);
 
             $pdf->SetFont('arial', '', 8);
             foreach ($transactions as $transaction) {
-                $pdf->Cell($colDate, 6, date('d/m/Y', strtotime($transaction->transaction_date)), 1, 0, 'C');
-                $pdf->Cell($colType, 6, $transaction->type === 'debit' ? 'مدين' : 'دائن', 1, 0, 'C');
-                $pdf->Cell($colCustomer, 6, $transaction->customer->name ?? '-', 1, 0, 'R');
-                $pdf->Cell($colAmount, 6, number_format($transaction->amount, 0, '.', ','), 1, 0, 'C');
+
+                //white color for the text
+                $pdf->setTextColor(255, 255, 255);
+                //light green if credit and light red if debit
+                $pdf->setFillColor($transaction->type === 'debit' ? 110 : 0, $transaction->type === 'debit' ? 0 : 110, 0);
+                $pdf->Cell($colDate, 6, date('d/m/Y', strtotime($transaction->transaction_date)), 1, 0, 'C', fill: true);
+
+                $pdf->Cell($colType, 6, $transaction->type === 'debit' ? 'مدين' : 'دائن', 1, 0, 'C', fill: true);
+                //green if credit and red if debit
+                $pdf->Cell($colCustomer, 6, $transaction->customer->name ?? '-', 1, 0, 'C', fill: true);
+                $pdf->Cell($colAmount, 6, number_format($transaction->amount, 0, '.', ','), 1, 0, 'C', fill: true);
                 $methodLabels = ['cash' => 'نقدي', 'bankak' => 'بنكاك', 'Ocash' => 'أوكاش', 'fawri' => 'فوري'];
-                $pdf->Cell($colMethod, 6, $methodLabels[$transaction->method] ?? '-', 1, 0, 'C');
-                $pdf->Cell($colRef, 6, $transaction->reference ?? '-', 1, 1, 'C');
+                $pdf->Cell($colMethod, 6, $methodLabels[$transaction->method] ?? '-', 1, 1, 'C', fill: true);
+                // $pdf->Cell($colRef, 6, $transaction->reference ?? '-', 1, 1, 'C');
             }
         }
 
@@ -502,7 +520,7 @@ class AccountingController extends Controller
         $writer = new Xlsx($spreadsheet);
         $filename = 'accounting_report_' . date('Y-m-d_His') . '.xlsx';
 
-        return new StreamedResponse(function() use ($writer) {
+        return new StreamedResponse(function () use ($writer) {
             $writer->save('php://output');
         }, 200, [
             'Content-Type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -530,7 +548,7 @@ class AccountingController extends Controller
         }
 
         $totalRevenue = (float) $transactionQuery->clone()->where('type', 'credit')->sum('amount');
-        
+
         // Payment method breakdown for revenue
         $revenueByMethod = $transactionQuery->clone()
             ->where('type', 'credit')
@@ -541,9 +559,20 @@ class AccountingController extends Controller
                 return [$item->method => (float) $item->total];
             })
             ->toArray();
-        
+
         $totalDebits = (float) $transactionQuery->clone()->where('type', 'debit')->sum('amount');
-        $totalExpenses = (float) $costQuery->sum('amount');
+        $totalExpenses = (float) $costQuery->clone()->sum('amount');
+
+        // Payment method breakdown for expenses
+        $expensesByMethod = $costQuery->clone()
+            ->select('payment_method', DB::raw('SUM(amount) as total'))
+            ->groupBy('payment_method')
+            ->get()
+            ->mapWithKeys(function ($item) {
+                return [$item->payment_method ?: 'unknown' => (float) $item->total];
+            })
+            ->toArray();
+
         $netProfit = $totalRevenue - $totalExpenses;
 
         return [
@@ -551,8 +580,90 @@ class AccountingController extends Controller
             'revenue_by_method' => $revenueByMethod,
             'total_debits' => $totalDebits,
             'total_expenses' => $totalExpenses,
+            'expenses_by_method' => $expensesByMethod,
             'net_profit' => $netProfit,
         ];
     }
-}
 
+    public function getMonthlyReport(Request $request): JsonResponse
+    {
+        $year = (int) $request->query('year', now()->year);
+        $month = (int) $request->query('month', now()->month);
+
+        $daysInMonth = (int) date('t', strtotime("$year-$month-01"));
+        $report = [];
+
+        // Initialize report array for each day
+        for ($day = 1; $day <= $daysInMonth; $day++) {
+            $date = sprintf('%04d-%02d-%02d', $year, $month, $day);
+            $report[$date] = [
+                'date' => $date,
+                'revenue_total' => 0,
+                'revenue_cash' => 0,
+                'revenue_bank' => 0,
+                'expense_total' => 0,
+                'expense_cash' => 0,
+                'expense_bank' => 0,
+                'net' => 0,
+            ];
+        }
+
+        // Get revenue data (transactions of type 'credit')
+        $revenues = Transaction::where('type', 'credit')
+            ->whereYear('transaction_date', $year)
+            ->whereMonth('transaction_date', $month)
+            ->select(
+                DB::raw('DATE(transaction_date) as day'),
+                DB::raw('SUM(amount) as total'),
+                'method'
+            )
+            ->groupBy('day', 'method')
+            ->get();
+
+        foreach ($revenues as $rev) {
+            $day = $rev->day;
+            if (isset($report[$day])) {
+                $report[$day]['revenue_total'] += (float) $rev->total;
+                if ($rev->method === 'cash') {
+                    $report[$day]['revenue_cash'] += (float) $rev->total;
+                } else {
+                    $report[$day]['revenue_bank'] += (float) $rev->total;
+                }
+            }
+        }
+
+        // Get expense data (costs)
+        $expenses = Cost::whereYear('date', $year)
+            ->whereMonth('date', $month)
+            ->select(
+                DB::raw('DATE(date) as day'),
+                DB::raw('SUM(amount) as total'),
+                'payment_method'
+            )
+            ->groupBy('day', 'payment_method')
+            ->get();
+
+        foreach ($expenses as $exp) {
+            $day = $exp->day;
+            if (isset($report[$day])) {
+                $report[$day]['expense_total'] += (float) $exp->total;
+                if ($exp->payment_method === 'cash') {
+                    $report[$day]['expense_cash'] += (float) $exp->total;
+                } else {
+                    $report[$day]['expense_bank'] += (float) $exp->total;
+                }
+            }
+        }
+
+        // Calculate net for each day
+        foreach ($report as &$dayData) {
+            $dayData['net'] = $dayData['revenue_total'] - $dayData['expense_total'];
+        }
+
+        return response()->json([
+            'report' => array_values($report),
+            'year' => $year,
+            'month' => $month,
+        ]);
+    }
+}

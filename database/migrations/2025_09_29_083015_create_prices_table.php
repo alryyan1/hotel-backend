@@ -17,7 +17,7 @@ return new class extends Migration
             $table->date('start_date');
             $table->date('end_date')->nullable();
             $table->decimal('amount', 10, 2);
-            $table->string('currency', 3)->default('USD');
+            $table->string('currency', 3)->default('SDG');
             $table->boolean('is_weekend')->default(false);
             $table->boolean('is_holiday')->default(false);
             $table->text('notes')->nullable();

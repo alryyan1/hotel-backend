@@ -10,14 +10,14 @@ Route::post('login', [\App\Http\Controllers\Api\AuthController::class, 'login'])
 Route::prefix('public')->group(function () {
     // Room types for public viewing
     Route::get('room-types', [\App\Http\Controllers\Api\RoomTypeController::class, 'index']);
-    
+
     // Availability search
     Route::get('availability', [\App\Http\Controllers\Api\AvailabilityController::class, 'search']);
-    
+
     // Customer operations (for booking)
     Route::get('customers/all', [\App\Http\Controllers\Api\CustomerController::class, 'fetchAll']);
     Route::post('customers', [\App\Http\Controllers\Api\CustomerController::class, 'store']);
-    
+
     // Reservation creation
     Route::post('reservations', [\App\Http\Controllers\Api\ReservationController::class, 'store']);
 });
@@ -64,13 +64,13 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // Customer Balance
     Route::get('customers/{customer}/balance', [\App\Http\Controllers\Api\CustomerController::class, 'getBalance']);
-    
+
     // Customer Ledger
     Route::get('customers/{customer}/ledger', [\App\Http\Controllers\Api\CustomerController::class, 'getLedger']);
-    
+
     // Customer PDF Export
     Route::get('customers/{customer}/ledger/pdf', [\App\Http\Controllers\Api\CustomerController::class, 'exportLedgerPdf']);
-    
+
     // Customer Document Management
     Route::post('customers/{customer}/document', [\App\Http\Controllers\Api\CustomerController::class, 'uploadDocument']);
     Route::delete('customers/{customer}/document', [\App\Http\Controllers\Api\CustomerController::class, 'deleteDocument']);
@@ -79,27 +79,27 @@ Route::middleware('auth:sanctum')->group(function () {
     // Costs
     Route::get('costs/export/excel', [\App\Http\Controllers\Api\CostController::class, 'exportExcel']);
     Route::apiResource('costs', \App\Http\Controllers\Api\CostController::class);
-    
+
     // Cost Categories
     Route::apiResource('cost-categories', \App\Http\Controllers\Api\CostCategoryController::class);
-    
+
     // Inventory Categories (must come before inventory routes to avoid route conflicts)
     Route::apiResource('inventory-categories', \App\Http\Controllers\Api\InventoryCategoryController::class);
     Route::get('inventory/categories', [\App\Http\Controllers\Api\InventoryCategoryController::class, 'index']);
-    
+
     // Inventory
     Route::get('inventory/low-stock', [\App\Http\Controllers\Api\InventoryController::class, 'lowStock']);
     Route::get('inventory/{inventory}/history', [\App\Http\Controllers\Api\InventoryController::class, 'history']);
     Route::post('inventory/{inventory}/update-stock', [\App\Http\Controllers\Api\InventoryController::class, 'updateStock']);
     Route::apiResource('inventory', \App\Http\Controllers\Api\InventoryController::class);
-    
+
     // Inventory Orders
     Route::post('inventory-orders/{inventoryOrder}/approve', [\App\Http\Controllers\Api\InventoryOrderController::class, 'approve']);
     Route::apiResource('inventory-orders', \App\Http\Controllers\Api\InventoryOrderController::class);
-    
+
     // Inventory Receipts (must come before inventory routes to avoid route conflicts)
     Route::apiResource('inventory-receipts', \App\Http\Controllers\Api\InventoryReceiptController::class);
-    
+
     // Cleaning Notifications
     Route::get('cleaning-notifications', [\App\Http\Controllers\Api\CleaningNotificationController::class, 'index']);
     Route::get('cleaning-notifications/count', [\App\Http\Controllers\Api\CleaningNotificationController::class, 'count']);
@@ -111,6 +111,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('accounting/summary', [\App\Http\Controllers\Api\AccountingController::class, 'getSummary']);
     Route::get('accounting/transactions', [\App\Http\Controllers\Api\AccountingController::class, 'getTransactions']);
     Route::get('accounting/customer-balances', [\App\Http\Controllers\Api\AccountingController::class, 'getCustomerBalances']);
+    Route::get('accounting/monthly-report', [\App\Http\Controllers\Api\AccountingController::class, 'getMonthlyReport']);
     Route::get('accounting/report/pdf', [\App\Http\Controllers\Api\AccountingController::class, 'exportReportPdf']);
     Route::get('accounting/report/excel', [\App\Http\Controllers\Api\AccountingController::class, 'exportReportExcel']);
 });

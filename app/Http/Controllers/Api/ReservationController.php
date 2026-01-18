@@ -37,19 +37,19 @@ class ReservationController extends Controller
         // Search functionality
         if ($request->has('search') && !empty($request->search)) {
             $searchTerm = $request->search;
-            $query->where(function($q) use ($searchTerm) {
+            $query->where(function ($q) use ($searchTerm) {
                 // Search in customer name
-                $q->whereHas('customer', function($customerQuery) use ($searchTerm) {
+                $q->whereHas('customer', function ($customerQuery) use ($searchTerm) {
                     $customerQuery->where('name', 'like', "%{$searchTerm}%")
-                                  ->orWhere('phone', 'like', "%{$searchTerm}%")
-                                  ->orWhere('email', 'like', "%{$searchTerm}%");
+                        ->orWhere('phone', 'like', "%{$searchTerm}%")
+                        ->orWhere('email', 'like', "%{$searchTerm}%");
                 })
-                // Search in room numbers
-                ->orWhereHas('rooms', function($roomQuery) use ($searchTerm) {
-                    $roomQuery->where('number', 'like', "%{$searchTerm}%");
-                })
-                // Search in reservation ID
-                ->orWhere('id', 'like', "%{$searchTerm}%");
+                    // Search in room numbers
+                    ->orWhereHas('rooms', function ($roomQuery) use ($searchTerm) {
+                        $roomQuery->where('number', 'like', "%{$searchTerm}%");
+                    })
+                    // Search in reservation ID
+                    ->orWhere('id', 'like', "%{$searchTerm}%");
             });
         }
 
@@ -69,14 +69,16 @@ class ReservationController extends Controller
         }
 
         // Date range filter based on check-in / check-out dates
-        if ($request->has('date_from') && !empty($request->date_from) && 
-            $request->has('date_to') && !empty($request->date_to)) {
+        if (
+            $request->has('date_from') && !empty($request->date_from) &&
+            $request->has('date_to') && !empty($request->date_to)
+        ) {
             // Both dates provided: show reservations that overlap with the date range
             $dateFrom = $request->date_from;
             $dateTo = $request->date_to;
             // Reservation overlaps if: check_in_date <= date_to AND check_out_date >= date_from
             $query->where('check_in_date', '<=', $dateTo)
-                  ->where('check_out_date', '>=', $dateFrom);
+                ->where('check_out_date', '>=', $dateFrom);
         } else {
             // Only one date provided
             if ($request->has('date_from') && !empty($request->date_from)) {
@@ -108,18 +110,18 @@ class ReservationController extends Controller
     public function store(Request $request)
     {
         $data = $request->validate([
-            'customer_id' => ['required','exists:customers,id'],
-            'check_in_date' => ['required','date'],
-            'check_out_date' => ['required','date','after:check_in_date'],
-            'guest_count' => ['nullable','integer','min:1'],
-            'status' => ['nullable', Rule::in(['pending','confirmed','checked_in','checked_out','cancelled'])],
-            'notes' => ['nullable','string'],
-            'rooms' => ['required','array','min:1'],
-            'rooms.*.id' => ['required','exists:rooms,id'],
-            'rooms.*.check_in_date' => ['nullable','date'],
-            'rooms.*.check_out_date' => ['nullable','date','after_or_equal:rooms.*.check_in_date'],
-            'rooms.*.rate' => ['nullable','numeric','min:0'],
-            'rooms.*.currency' => ['nullable','string','size:3'],
+            'customer_id' => ['required', 'exists:customers,id'],
+            'check_in_date' => ['required', 'date'],
+            'check_out_date' => ['required', 'date', 'after:check_in_date'],
+            'guest_count' => ['nullable', 'integer', 'min:1'],
+            'status' => ['nullable', Rule::in(['pending', 'confirmed', 'checked_in', 'checked_out', 'cancelled'])],
+            'notes' => ['nullable', 'string'],
+            'rooms' => ['required', 'array', 'min:1'],
+            'rooms.*.id' => ['required', 'exists:rooms,id'],
+            'rooms.*.check_in_date' => ['nullable', 'date'],
+            'rooms.*.check_out_date' => ['nullable', 'date', 'after_or_equal:rooms.*.check_in_date'],
+            'rooms.*.rate' => ['nullable', 'numeric', 'min:0'],
+            'rooms.*.currency' => ['nullable', 'string', 'size:3'],
         ]);
 
         // Check overlap for each requested room
@@ -162,7 +164,7 @@ class ReservationController extends Controller
                     'check_in_date' => $room['check_in_date'] ?? $data['check_in_date'],
                     'check_out_date' => $room['check_out_date'] ?? $data['check_out_date'],
                     'rate' => $room['rate'] ?? null,
-                    'currency' => $room['currency'] ?? 'USD',
+                    'currency' => $room['currency'] ?? 'SDG',
                 ],
             ];
         })->toArray();
@@ -172,7 +174,7 @@ class ReservationController extends Controller
         // Create a debit transaction for this reservation
         $reservation->load(['rooms.type']);
         $roomTypes = RoomType::all()->keyBy('id');
-        
+
         $checkIn = new \DateTime($reservation->check_in_date);
         $checkOut = new \DateTime($reservation->check_out_date);
         $interval = $checkIn->diff($checkOut);
@@ -184,8 +186,8 @@ class ReservationController extends Controller
             // If a specific rate is provided on the pivot, use it; otherwise use room type base_price
             $basePrice = $room->pivot->rate ?? (
                 ($room->type && $room->type->base_price)
-                    ? $room->type->base_price
-                    : ($roomTypes[$room->room_type_id]->base_price ?? 0)
+                ? $room->type->base_price
+                : ($roomTypes[$room->room_type_id]->base_price ?? 0)
             );
             $totalDebit += $days * $basePrice;
         }
@@ -196,7 +198,7 @@ class ReservationController extends Controller
             'reservation_id' => $reservation->id,
             'type' => 'debit',
             'amount' => $totalDebit,
-            'currency' => 'USD',
+            'currency' => 'SDG',
             'transaction_date' => $reservation->check_in_date,
             'reference' => 'RES-' . $reservation->id,
         ]);
@@ -206,7 +208,7 @@ class ReservationController extends Controller
         try {
             $smsService = app(ReservationSmsService::class);
             $smsResult = $smsService->sendReservationConfirmation($reservation);
-            
+
             if (!$smsResult['success']) {
                 Log::warning('Failed to send reservation SMS', [
                     'reservation_id' => $reservation->id,
@@ -224,7 +226,7 @@ class ReservationController extends Controller
             ];
         }
 
-        $responseData = $reservation->load(['customer','rooms','transactions']);
+        $responseData = $reservation->load(['customer', 'rooms', 'transactions']);
         $responseData->sms_result = $smsResult;
 
         return response()->json($responseData, 201);
@@ -235,7 +237,7 @@ class ReservationController extends Controller
      */
     public function show(Reservation $reservation)
     {
-        return response()->json($reservation->load(['customer','rooms','transactions']));
+        return response()->json($reservation->load(['customer', 'rooms', 'transactions']));
     }
 
     /**
@@ -244,25 +246,25 @@ class ReservationController extends Controller
     public function update(Request $request, Reservation $reservation)
     {
         $data = $request->validate([
-            'customer_id' => ['sometimes','exists:customers,id'],
-            'check_in_date' => ['sometimes','date'],
-            'check_out_date' => ['sometimes','date','after:check_in_date'],
-            'guest_count' => ['sometimes','integer','min:1'],
-            'status' => ['sometimes', Rule::in(['pending','confirmed','checked_in','checked_out','cancelled'])],
-            'notes' => ['sometimes','string'],
-            'rooms' => ['sometimes','array','min:1'],
-            'rooms.*.id' => ['required_with:rooms','exists:rooms,id'],
-            'rooms.*.check_in_date' => ['nullable','date'],
-            'rooms.*.check_out_date' => ['nullable','date','after_or_equal:rooms.*.check_in_date'],
-            'rooms.*.rate' => ['nullable','numeric','min:0'],
-            'rooms.*.currency' => ['nullable','string','size:3'],
+            'customer_id' => ['sometimes', 'exists:customers,id'],
+            'check_in_date' => ['sometimes', 'date'],
+            'check_out_date' => ['sometimes', 'date', 'after:check_in_date'],
+            'guest_count' => ['sometimes', 'integer', 'min:1'],
+            'status' => ['sometimes', Rule::in(['pending', 'confirmed', 'checked_in', 'checked_out', 'cancelled'])],
+            'notes' => ['sometimes', 'string'],
+            'rooms' => ['sometimes', 'array', 'min:1'],
+            'rooms.*.id' => ['required_with:rooms', 'exists:rooms,id'],
+            'rooms.*.check_in_date' => ['nullable', 'date'],
+            'rooms.*.check_out_date' => ['nullable', 'date', 'after_or_equal:rooms.*.check_in_date'],
+            'rooms.*.rate' => ['nullable', 'numeric', 'min:0'],
+            'rooms.*.currency' => ['nullable', 'string', 'size:3'],
         ]);
 
         // If dates or rooms changed, re-validate overlaps
         if (isset($data['rooms']) || isset($data['check_in_date']) || isset($data['check_out_date'])) {
             $ciBase = $data['check_in_date'] ?? $reservation->check_in_date;
             $coBase = $data['check_out_date'] ?? $reservation->check_out_date;
-            $roomsCheck = $data['rooms'] ?? $reservation->rooms->map(fn($r)=>['id'=>$r->id])->toArray();
+            $roomsCheck = $data['rooms'] ?? $reservation->rooms->map(fn($r) => ['id' => $r->id])->toArray();
             foreach ($roomsCheck as $roomReq) {
                 $ci = $roomReq['check_in_date'] ?? $ciBase;
                 $co = $roomReq['check_out_date'] ?? $coBase;
@@ -270,21 +272,21 @@ class ReservationController extends Controller
                     ->where('id', '<>', $reservation->id)
                     ->whereHas('rooms', function ($q) use ($roomReq, $ci, $co) {
                         $q->where('rooms.id', $roomReq['id'])
-                          ->where(function($p) use ($ci, $co) {
-                              $p->where(function($x) use ($ci, $co) {
-                                  $x->where('reservation_room.check_in_date', '<', $co)
-                                    ->where('reservation_room.check_out_date', '>', $ci);
-                              })->orWhere(function($x) use ($ci, $co) {
-                                  $x->whereNull('reservation_room.check_in_date')
-                                    ->whereNull('reservation_room.check_out_date')
-                                    ->where('reservations.check_in_date', '<', $co)
-                                    ->where('reservations.check_out_date', '>', $ci);
-                              });
-                          });
+                            ->where(function ($p) use ($ci, $co) {
+                                $p->where(function ($x) use ($ci, $co) {
+                                    $x->where('reservation_room.check_in_date', '<', $co)
+                                        ->where('reservation_room.check_out_date', '>', $ci);
+                                })->orWhere(function ($x) use ($ci, $co) {
+                                    $x->whereNull('reservation_room.check_in_date')
+                                        ->whereNull('reservation_room.check_out_date')
+                                        ->where('reservations.check_in_date', '<', $co)
+                                        ->where('reservations.check_out_date', '>', $ci);
+                                });
+                            });
                     })
                     ->exists();
                 if ($overlap) {
-                    return response()->json(['message' => 'Room not available for selected period','room_id' => $roomReq['id']], 422);
+                    return response()->json(['message' => 'Room not available for selected period', 'room_id' => $roomReq['id']], 422);
                 }
             }
         }
@@ -300,14 +302,14 @@ class ReservationController extends Controller
                         'check_in_date' => $room['check_in_date'] ?? $ciBase,
                         'check_out_date' => $room['check_out_date'] ?? $coBase,
                         'rate' => $room['rate'] ?? null,
-                        'currency' => $room['currency'] ?? 'USD',
+                        'currency' => $room['currency'] ?? 'SDG',
                     ],
                 ];
             })->toArray();
             $reservation->rooms()->sync($syncData);
         }
 
-        return response()->json($reservation->load(['customer','rooms','transactions']));
+        return response()->json($reservation->load(['customer', 'rooms', 'transactions']));
     }
 
     /**
@@ -331,7 +333,7 @@ class ReservationController extends Controller
         try {
             $smsService = app(ReservationSmsService::class);
             $smsResult = $smsService->sendReservationConfirmationSms($reservation);
-            
+
             if (!$smsResult['success']) {
                 Log::warning('Failed to send reservation confirmation SMS', [
                     'reservation_id' => $reservation->id,
@@ -366,7 +368,7 @@ class ReservationController extends Controller
         // Allow check-in even if there are pending/confirmed reservations for the same room
         $reservation->load('rooms');
         $occupiedRooms = [];
-        
+
         foreach ($reservation->rooms as $room) {
             // Find other reservations that have this room and status is 'checked_in'
             $conflictingReservation = \App\Models\Reservation::query()
@@ -377,7 +379,7 @@ class ReservationController extends Controller
                 })
                 ->with('customer:id,name')
                 ->first();
-            
+
             if ($conflictingReservation) {
                 $occupiedRooms[] = [
                     'room_id' => $room->id,
@@ -392,7 +394,7 @@ class ReservationController extends Controller
                 ];
             }
         }
-        
+
         if (!empty($occupiedRooms)) {
             return response()->json([
                 'message' => 'Cannot check in: Some rooms are already occupied',
@@ -431,7 +433,7 @@ class ReservationController extends Controller
 
     public function cancel(Reservation $reservation)
     {
-        if (in_array($reservation->status, ['checked_in','checked_out'])) {
+        if (in_array($reservation->status, ['checked_in', 'checked_out'])) {
             return response()->json(['message' => 'Cannot cancel after check-in'], 422);
         }
         $reservation->update(['status' => 'cancelled']);
@@ -448,16 +450,16 @@ class ReservationController extends Controller
         // Apply the same filters as index method
         if ($request->has('search') && !empty($request->search)) {
             $searchTerm = $request->search;
-            $query->where(function($q) use ($searchTerm) {
-                $q->whereHas('customer', function($customerQuery) use ($searchTerm) {
+            $query->where(function ($q) use ($searchTerm) {
+                $q->whereHas('customer', function ($customerQuery) use ($searchTerm) {
                     $customerQuery->where('name', 'like', "%{$searchTerm}%")
-                                  ->orWhere('phone', 'like', "%{$searchTerm}%")
-                                  ->orWhere('email', 'like', "%{$searchTerm}%");
+                        ->orWhere('phone', 'like', "%{$searchTerm}%")
+                        ->orWhere('email', 'like', "%{$searchTerm}%");
                 })
-                ->orWhereHas('rooms', function($roomQuery) use ($searchTerm) {
-                    $roomQuery->where('number', 'like', "%{$searchTerm}%");
-                })
-                ->orWhere('id', 'like', "%{$searchTerm}%");
+                    ->orWhereHas('rooms', function ($roomQuery) use ($searchTerm) {
+                        $roomQuery->where('number', 'like', "%{$searchTerm}%");
+                    })
+                    ->orWhere('id', 'like', "%{$searchTerm}%");
             });
         }
 
@@ -469,12 +471,14 @@ class ReservationController extends Controller
             $query->where('customer_id', $request->customer_id);
         }
 
-        if ($request->has('date_from') && !empty($request->date_from) && 
-            $request->has('date_to') && !empty($request->date_to)) {
+        if (
+            $request->has('date_from') && !empty($request->date_from) &&
+            $request->has('date_to') && !empty($request->date_to)
+        ) {
             $dateFrom = $request->date_from;
             $dateTo = $request->date_to;
             $query->where('check_in_date', '<=', $dateTo)
-                  ->where('check_out_date', '>=', $dateFrom);
+                ->where('check_out_date', '>=', $dateFrom);
         } else {
             if ($request->has('date_from') && !empty($request->date_from)) {
                 $query->where('check_out_date', '>=', $request->date_from);
@@ -493,7 +497,7 @@ class ReservationController extends Controller
         $spreadsheet = new Spreadsheet();
         $sheet = $spreadsheet->getActiveSheet();
         $sheet->setTitle('الحجوزات');
-        
+
         // Set RTL (Right-to-Left) direction
         $sheet->setRightToLeft(true);
 
@@ -525,7 +529,7 @@ class ReservationController extends Controller
             $drawing->setOffsetX(10);
             $drawing->setOffsetY(10);
             $drawing->setWorksheet($sheet);
-            
+
             // Merge cells for logo area
             $sheet->mergeCells('A' . $currentRow . ':B' . ($currentRow + 2));
         }
@@ -617,7 +621,7 @@ class ReservationController extends Controller
         $totalBalance = 0;
 
         foreach ($reservations as $reservation) {
-            $rooms = $reservation->rooms->map(function($room) {
+            $rooms = $reservation->rooms->map(function ($room) {
                 return 'غرفة ' . $room->number;
             })->implode(', ');
 
@@ -716,8 +720,8 @@ class ReservationController extends Controller
         $filename = 'reservations_export_' . date('Y-m-d_His') . '.xlsx';
 
         $writer = new Xlsx($spreadsheet);
-        
-        return new StreamedResponse(function() use ($writer) {
+
+        return new StreamedResponse(function () use ($writer) {
             $writer->save('php://output');
         }, 200, [
             'Content-Type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
