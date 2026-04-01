@@ -32,7 +32,7 @@ class ReservationController extends Controller
      */
     public function index(Request $request)
     {
-        $query = Reservation::with(['customer', 'rooms', 'transactions']);
+        $query = Reservation::with(['customer', 'rooms.type', 'transactions']);
 
         // Search functionality
         if ($request->has('search') && !empty($request->search)) {
@@ -237,7 +237,7 @@ class ReservationController extends Controller
      */
     public function show(Reservation $reservation)
     {
-        return response()->json($reservation->load(['customer', 'rooms', 'transactions']));
+        return response()->json($reservation->load(['customer', 'rooms.type', 'transactions']));
     }
 
     /**
@@ -309,7 +309,7 @@ class ReservationController extends Controller
             $reservation->rooms()->sync($syncData);
         }
 
-        return response()->json($reservation->load(['customer', 'rooms', 'transactions']));
+        return response()->json($reservation->load(['customer', 'rooms.type', 'transactions']));
     }
 
     /**
@@ -437,7 +437,95 @@ class ReservationController extends Controller
             return response()->json(['message' => 'Cannot cancel after check-in'], 422);
         }
         $reservation->update(['status' => 'cancelled']);
-        return response()->json($reservation->load(['customer', 'rooms', 'payments']));
+        return response()->json($reservation->load(['customer', 'rooms.type', 'payments']));
+    }
+
+    public function extend(Request $request, Reservation $reservation)
+    {
+        $data = $request->validate([
+            'check_out_date' => ['required', 'date', 'after:' . $reservation->check_out_date],
+        ]);
+
+        $newCheckOut = $data['check_out_date'];
+        $oldCheckOut = $reservation->check_out_date;
+
+        // Check availability for the extension period
+        $reservation->load('rooms');
+        foreach ($reservation->rooms as $room) {
+            $overlap = Reservation::query()
+                ->where('id', '<>', $reservation->id)
+                ->where('status', '!=', 'cancelled')
+                ->whereHas('rooms', function ($q) use ($room, $oldCheckOut, $newCheckOut) {
+                    $q->where('rooms.id', $room->id)
+                        ->where(function ($p) use ($oldCheckOut, $newCheckOut) {
+                            $p->where(function ($x) use ($oldCheckOut, $newCheckOut) {
+                                $x->where('reservation_room.check_in_date', '<', $newCheckOut)
+                                    ->where('reservation_room.check_out_date', '>', $oldCheckOut);
+                            })->orWhere(function ($x) use ($oldCheckOut, $newCheckOut) {
+                                $x->whereNull('reservation_room.check_in_date')
+                                    ->whereNull('reservation_room.check_out_date')
+                                    ->where('reservations.check_in_date', '<', $newCheckOut)
+                                    ->where('reservations.check_out_date', '>', $oldCheckOut);
+                            });
+                        });
+                })
+                ->exists();
+
+            if ($overlap) {
+                return response()->json(['message' => "Room {$room->number} is not available for the extension period"], 422);
+            }
+        }
+
+        // Calculate extra cost
+        $roomTypes = RoomType::all()->keyBy('id');
+        $oldDate = new \DateTime($oldCheckOut);
+        $newDate = new \DateTime($newCheckOut);
+        $interval = $oldDate->diff($newDate);
+        $extraDays = $interval->days;
+
+        if ($extraDays <= 0) {
+            return response()->json(['message' => 'Extension must be at least one day'], 422);
+        }
+
+        $extraAmount = 0;
+        foreach ($reservation->rooms as $room) {
+            $basePrice = $room->pivot->rate ?? (
+                ($room->type && $room->type->base_price)
+                ? $room->type->base_price
+                : ($roomTypes[$room->room_type_id]->base_price ?? 0)
+            );
+            $extraAmount += $extraDays * $basePrice;
+        }
+
+        DB::transaction(function () use ($reservation, $newCheckOut, $extraAmount) {
+            // Update reservation
+            $reservation->check_out_date = $newCheckOut;
+            $reservation->total_amount += $extraAmount;
+            $reservation->save();
+
+            // Update rooms pivot
+            foreach ($reservation->rooms as $room) {
+                $reservation->rooms()->updateExistingPivot($room->id, [
+                    'check_out_date' => $newCheckOut
+                ]);
+            }
+
+            // Create transaction if amount > 0
+            if ($extraAmount > 0) {
+                Transaction::create([
+                    'customer_id' => $reservation->customer_id,
+                    'reservation_id' => $reservation->id,
+                    'type' => 'debit',
+                    'amount' => $extraAmount,
+                    'currency' => 'SDG',
+                    'transaction_date' => now(),
+                    'reference' => 'EXT-' . $reservation->id . '-' . time(),
+                    'notes' => "Extension to {$newCheckOut}",
+                ]);
+            }
+        });
+
+        return response()->json($reservation->fresh()->load(['customer', 'rooms', 'transactions']));
     }
 
     /**

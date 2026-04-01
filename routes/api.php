@@ -45,6 +45,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('reservations/{reservation}/check-in', [\App\Http\Controllers\Api\ReservationController::class, 'checkIn']);
     Route::post('reservations/{reservation}/check-out', [\App\Http\Controllers\Api\ReservationController::class, 'checkOut']);
     Route::post('reservations/{reservation}/cancel', [\App\Http\Controllers\Api\ReservationController::class, 'cancel']);
+    Route::post('reservations/{reservation}/extend', [\App\Http\Controllers\Api\ReservationController::class, 'extend']);
     Route::get('reservations/export/excel', [\App\Http\Controllers\Api\ReservationController::class, 'exportExcel']);
     Route::get('reservations/{reservation}/invoice/pdf', [\App\Http\Controllers\Api\ReservationController::class, 'exportInvoicePdf']);
 
