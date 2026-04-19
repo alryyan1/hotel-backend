@@ -203,28 +203,8 @@ class ReservationController extends Controller
             'reference' => 'RES-' . $reservation->id,
         ]);
 
-        // Send SMS notification
-        $smsResult = null;
-        try {
-            $smsService = app(ReservationSmsService::class);
-            $smsResult = $smsService->sendReservationConfirmation($reservation);
-
-            if (!$smsResult['success']) {
-                Log::warning('Failed to send reservation SMS', [
-                    'reservation_id' => $reservation->id,
-                    'error' => $smsResult['error'] ?? 'Unknown error'
-                ]);
-            }
-        } catch (\Exception $e) {
-            Log::error('SMS service error', [
-                'reservation_id' => $reservation->id,
-                'error' => $e->getMessage()
-            ]);
-            $smsResult = [
-                'success' => false,
-                'error' => $e->getMessage()
-            ];
-        }
+        // SMS service disabled
+        $smsResult = ['success' => false, 'error' => 'SMS service disabled'];
 
         $responseData = $reservation->load(['customer', 'rooms', 'transactions']);
         $responseData->sms_result = $smsResult;
@@ -328,28 +308,8 @@ class ReservationController extends Controller
         }
         $reservation->update(['status' => 'confirmed']);
 
-        // Send SMS notification for confirmation
-        $smsResult = null;
-        try {
-            $smsService = app(ReservationSmsService::class);
-            $smsResult = $smsService->sendReservationConfirmationSms($reservation);
-
-            if (!$smsResult['success']) {
-                Log::warning('Failed to send reservation confirmation SMS', [
-                    'reservation_id' => $reservation->id,
-                    'error' => $smsResult['error'] ?? 'Unknown error'
-                ]);
-            }
-        } catch (\Exception $e) {
-            Log::error('SMS service error during confirmation', [
-                'reservation_id' => $reservation->id,
-                'error' => $e->getMessage()
-            ]);
-            $smsResult = [
-                'success' => false,
-                'error' => $e->getMessage()
-            ];
-        }
+        // SMS service disabled
+        $smsResult = ['success' => false, 'error' => 'SMS service disabled'];
 
         $responseData = $reservation->load(['customer', 'rooms', 'payments']);
         $responseData->sms_result = $smsResult;
