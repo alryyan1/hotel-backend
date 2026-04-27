@@ -374,8 +374,28 @@ class ReservationController extends Controller
             return response()->json(['message' => 'Reservation must be checked in to check out'], 422);
         }
 
-        DB::transaction(function () use ($reservation) {
-            // Create cleaning notification for checkout
+        $today = now()->toDateString();
+        $scheduledCheckOut = $reservation->check_out_date instanceof \Carbon\Carbon
+            ? $reservation->check_out_date->toDateString()
+            : substr($reservation->check_out_date, 0, 10);
+
+        $isEarlyCheckout = $today < $scheduledCheckOut;
+        $refundAmount = 0;
+        $remainingDays = 0;
+
+        if ($isEarlyCheckout) {
+            $todayDate = new \DateTime($today);
+            $scheduledDate = new \DateTime($scheduledCheckOut);
+            $remainingDays = $todayDate->diff($scheduledDate)->days;
+
+            $reservation->load(['rooms.type']);
+            foreach ($reservation->rooms as $room) {
+                $rate = $room->pivot->rate ?? ($room->type->base_price ?? 0);
+                $refundAmount += $remainingDays * (float) $rate;
+            }
+        }
+
+        DB::transaction(function () use ($reservation, $today, $isEarlyCheckout, $refundAmount, $remainingDays, $scheduledCheckOut) {
             foreach ($reservation->rooms as $room) {
                 \App\Models\CleaningNotification::create([
                     'room_id' => $room->id,
@@ -385,7 +405,27 @@ class ReservationController extends Controller
                     'notified_at' => now(),
                 ]);
             }
-            $reservation->update(['status' => 'checked_out']);
+
+            $updateData = ['status' => 'checked_out'];
+
+            if ($isEarlyCheckout) {
+                $updateData['check_out_date'] = $today;
+
+                if ($refundAmount > 0) {
+                    Transaction::create([
+                        'customer_id' => $reservation->customer_id,
+                        'reservation_id' => $reservation->id,
+                        'type' => 'refund',
+                        'amount' => $refundAmount,
+                        'currency' => 'SDG',
+                        'transaction_date' => $today,
+                        'notes' => 'مغادرة مبكرة - استرجاع ' . $remainingDays . ' يوم (الموعد الأصلي: ' . $scheduledCheckOut . ')',
+                        'reference' => 'REFUND-RES-' . $reservation->id,
+                    ]);
+                }
+            }
+
+            $reservation->update($updateData);
         });
 
         return response()->json($reservation->fresh()->load(['customer', 'rooms', 'transactions']));

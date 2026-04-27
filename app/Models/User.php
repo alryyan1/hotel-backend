@@ -47,6 +47,8 @@ class User extends Authenticatable
         'name',
         'username',
         'password',
+        'is_admin',
+        'permissions',
     ];
 
     /**
@@ -68,6 +70,8 @@ class User extends Authenticatable
     {
         return [
             'password' => 'hashed',
+            'is_admin' => 'boolean',
+            'permissions' => 'array',
         ];
     }
 }

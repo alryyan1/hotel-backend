@@ -60,6 +60,11 @@ class AccountingController extends Controller
             ->where('type', 'debit')
             ->sum('amount');
 
+        // Total refunds (early checkout refunds)
+        $totalRefunds = (float) $transactionQuery->clone()
+            ->where('type', 'refund')
+            ->sum('amount');
+
         // Total expenses (costs)
         $totalExpenses = (float) $costQuery->clone()->sum('amount');
 
@@ -73,13 +78,14 @@ class AccountingController extends Controller
             })
             ->toArray();
 
-        // Net profit (revenue - expenses)
-        $netProfit = $totalRevenue - $totalExpenses;
+        // Net profit (revenue - expenses - refunds)
+        $netProfit = $totalRevenue - $totalExpenses - $totalRefunds;
 
         return response()->json([
             'total_revenue' => $totalRevenue,
             'revenue_by_method' => $revenueByMethod,
             'total_debits' => $totalDebits,
+            'total_refunds' => $totalRefunds,
             'total_expenses' => $totalExpenses,
             'expenses_by_method' => $expensesByMethod,
             'net_profit' => $netProfit,
@@ -604,6 +610,7 @@ class AccountingController extends Controller
                 'expense_total' => 0,
                 'expense_cash' => 0,
                 'expense_bank' => 0,
+                'refund_total' => 0,
                 'net' => 0,
             ];
         }
@@ -655,6 +662,32 @@ class AccountingController extends Controller
             }
         }
 
+        // Get refund data (transactions of type 'refund')
+        $refunds = Transaction::where('type', 'refund')
+            ->whereYear('transaction_date', $year)
+            ->whereMonth('transaction_date', $month)
+            ->select(
+                DB::raw('DATE(transaction_date) as day'),
+                DB::raw('SUM(amount) as total'),
+                'method'
+            )
+            ->groupBy('day', 'method')
+            ->get();
+
+        foreach ($refunds as $ref) {
+            $day = $ref->day;
+            if (isset($report[$day])) {
+                $report[$day]['refund_total'] += (float) $ref->total;
+                // Deduct from revenue as requested: "اخصم مبلغ الاسترجاع من الايرادات"
+                $report[$day]['revenue_total'] -= (float) $ref->total;
+                if ($ref->method === 'cash') {
+                    $report[$day]['revenue_cash'] -= (float) $ref->total;
+                } else {
+                    $report[$day]['revenue_bank'] -= (float) $ref->total;
+                }
+            }
+        }
+
         // Calculate net for each day
         foreach ($report as &$dayData) {
             $dayData['net'] = $dayData['revenue_total'] - $dayData['expense_total'];
@@ -664,6 +697,146 @@ class AccountingController extends Controller
             'report' => array_values($report),
             'year' => $year,
             'month' => $month,
+        ]);
+    }
+
+    public function exportMonthlyReportPdf(Request $request): Response
+    {
+        $year = (int) $request->query('year', now()->year);
+        $month = (int) $request->query('month', now()->month);
+
+        // Get data directly to avoid JsonResponse overhead/issues
+        $daysInMonth = (int) date('t', strtotime("$year-$month-01"));
+        $report = [];
+        for ($day = 1; $day <= $daysInMonth; $day++) {
+            $date = sprintf('%04d-%02d-%02d', $year, $month, $day);
+            $report[$date] = [
+                'date' => $date,
+                'revenue_total' => 0,
+                'revenue_cash' => 0,
+                'revenue_bank' => 0,
+                'expense_total' => 0,
+                'expense_cash' => 0,
+                'expense_bank' => 0,
+                'refund_total' => 0,
+                'net' => 0,
+            ];
+        }
+
+        $revenues = Transaction::where('type', 'credit')
+            ->whereYear('transaction_date', $year)
+            ->whereMonth('transaction_date', $month)
+            ->select(DB::raw('DATE(transaction_date) as day'), DB::raw('SUM(amount) as total'), 'method')
+            ->groupBy('day', 'method')->get();
+
+        foreach ($revenues as $rev) {
+            $day = $rev->day;
+            if (isset($report[$day])) {
+                $report[$day]['revenue_total'] += (float) $rev->total;
+                if ($rev->method === 'cash') $report[$day]['revenue_cash'] += (float) $rev->total;
+                else $report[$day]['revenue_bank'] += (float) $rev->total;
+            }
+        }
+
+        $expenses = Cost::whereYear('date', $year)
+            ->whereMonth('date', $month)
+            ->select(DB::raw('DATE(date) as day'), DB::raw('SUM(amount) as total'), 'payment_method')
+            ->groupBy('day', 'payment_method')->get();
+
+        foreach ($expenses as $exp) {
+            $day = $exp->day;
+            if (isset($report[$day])) {
+                $report[$day]['expense_total'] += (float) $exp->total;
+                if ($exp->payment_method === 'cash') $report[$day]['expense_cash'] += (float) $exp->total;
+                else $report[$day]['expense_bank'] += (float) $exp->total;
+            }
+        }
+
+        // Get refunds (transactions of type 'refund')
+        $refunds = Transaction::where('type', 'refund')
+            ->whereYear('transaction_date', $year)
+            ->whereMonth('transaction_date', $month)
+            ->select(DB::raw('DATE(transaction_date) as day'), DB::raw('SUM(amount) as total'), 'method')
+            ->groupBy('day', 'method')->get();
+
+        foreach ($refunds as $ref) {
+            $day = $ref->day;
+            if (isset($report[$day])) {
+                $report[$day]['refund_total'] += (float) $ref->total;
+                $report[$day]['revenue_total'] -= (float) $ref->total;
+                if ($ref->method === 'cash') $report[$day]['revenue_cash'] -= (float) $ref->total;
+                else $report[$day]['revenue_bank'] -= (float) $ref->total;
+            }
+        }
+
+        foreach ($report as &$dayData) {
+            $dayData['net'] = $dayData['revenue_total'] - $dayData['expense_total'];
+        }
+
+        $pdf = new \TCPDF('L', 'mm', 'A4', true, 'UTF-8', false);
+        $pdf->SetCreator('Hotel Management System');
+        $pdf->SetTitle('التقرير الشهري للإيرادات والمصروفات');
+        $pdf->setPrintHeader(false);
+        $pdf->setPrintFooter(false);
+        $pdf->SetMargins(10, 10, 10);
+        $pdf->SetAutoPageBreak(true, 10);
+        $pdf->setRTL(true);
+        $pdf->AddPage();
+
+        $pdf->SetFont('freeserif', 'B', 18);
+        $months = ["يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو", "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر"];
+        $monthName = $months[$month - 1];
+        $pdf->Cell(0, 15, "تقرير الإيرادات والمصروفات لشهر $monthName $year", 0, 1, 'C');
+        $pdf->Ln(5);
+
+        $pdf->SetFont('freeserif', 'B', 10);
+        $pdf->SetFillColor(230, 230, 230);
+        $cols = [30, 31, 31, 31, 31, 31, 31, 31, 30];
+        $headers = ['التاريخ', 'صافي الإيراد', 'نقدي', 'بنك', 'الاسترجاع', 'المصاريف', 'نقدي', 'بنك', 'الصافي'];
+        foreach ($headers as $i => $h) $pdf->Cell($cols[$i], 10, $h, 1, 0, 'C', true);
+        $pdf->Ln();
+
+        $pdf->SetFont('freeserif', '', 10);
+        $totals = ['rev' => 0, 'rev_c' => 0, 'rev_b' => 0, 'ref' => 0, 'exp' => 0, 'exp_c' => 0, 'exp_b' => 0, 'net' => 0];
+        foreach ($report as $day) {
+            $pdf->Cell($cols[0], 8, date('d-m-Y', strtotime($day['date'])), 1, 0, 'C');
+            $pdf->Cell($cols[1], 8, number_format($day['revenue_total'], 0, '.', ','), 1, 0, 'C');
+            $pdf->Cell($cols[2], 8, number_format($day['revenue_cash'], 0, '.', ','), 1, 0, 'C');
+            $pdf->Cell($cols[3], 8, number_format($day['revenue_bank'], 0, '.', ','), 1, 0, 'C');
+            $pdf->Cell($cols[4], 8, number_format($day['refund_total'], 0, '.', ','), 1, 0, 'C');
+            $pdf->Cell($cols[5], 8, number_format($day['expense_total'], 0, '.', ','), 1, 0, 'C');
+            $pdf->Cell($cols[6], 8, number_format($day['expense_cash'], 0, '.', ','), 1, 0, 'C');
+            $pdf->Cell($cols[7], 8, number_format($day['expense_bank'], 0, '.', ','), 1, 0, 'C');
+            if ($day['net'] < 0) $pdf->SetTextColor(200, 0, 0);
+            $pdf->Cell($cols[8], 8, number_format($day['net'], 0, '.', ','), 1, 1, 'C');
+            $pdf->SetTextColor(0, 0, 0);
+
+            $totals['rev'] += $day['revenue_total']; $totals['rev_c'] += $day['revenue_cash']; $totals['rev_b'] += $day['revenue_bank'];
+            $totals['ref'] += $day['refund_total'];
+            $totals['exp'] += $day['expense_total']; $totals['exp_c'] += $day['expense_cash']; $totals['exp_b'] += $day['expense_bank'];
+            $totals['net'] += $day['net'];
+        }
+
+        $pdf->SetFont('freeserif', 'B', 11);
+        $pdf->SetFillColor(240, 240, 240);
+        $pdf->Cell($cols[0], 10, 'الإجمالي', 1, 0, 'C', true);
+        $pdf->Cell($cols[1], 10, number_format($totals['rev'], 0, '.', ','), 1, 0, 'C', true);
+        $pdf->Cell($cols[2], 10, number_format($totals['rev_c'], 0, '.', ','), 1, 0, 'C', true);
+        $pdf->Cell($cols[3], 10, number_format($totals['rev_b'], 0, '.', ','), 1, 0, 'C', true);
+        $pdf->Cell($cols[4], 10, number_format($totals['ref'], 0, '.', ','), 1, 0, 'C', true);
+        $pdf->Cell($cols[5], 10, number_format($totals['exp'], 0, '.', ','), 1, 0, 'C', true);
+        $pdf->Cell($cols[6], 10, number_format($totals['exp_c'], 0, '.', ','), 1, 0, 'C', true);
+        $pdf->Cell($cols[7], 10, number_format($totals['exp_b'], 0, '.', ','), 1, 0, 'C', true);
+        $pdf->Cell($cols[8], 10, number_format($totals['net'], 0, '.', ','), 1, 1, 'C', true);
+        $pdf->Ln(5);
+
+        $filename = "monthly_report_{$year}_{$month}.pdf";
+        if (ob_get_length()) ob_clean();
+        $content = $pdf->Output('', 'S');
+        
+        return response()->make($content, 200, [
+            'Content-Type' => 'application/pdf',
+            'Content-Disposition' => 'attachment; filename="' . $filename . '"',
         ]);
     }
 }

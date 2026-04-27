@@ -170,12 +170,17 @@ class CustomerController extends Controller
             ->where('type', 'credit')
             ->sum('amount');
 
-        $balance = $totalDebit - $totalCredit;
+        $totalRefund = $customer->transactions()
+            ->where('type', 'refund')
+            ->sum('amount');
+
+        $balance = $totalDebit - $totalCredit - $totalRefund;
 
         return response()->json([
             'balance' => $balance,
             'total_debit' => $totalDebit,
             'total_credit' => $totalCredit,
+            'total_refund' => $totalRefund,
         ]);
     }
 
@@ -494,6 +499,21 @@ class CustomerController extends Controller
                         'balance' => $runningBalance
                     ];
                 }
+            } elseif ($transaction->type === 'refund') {
+                // Refund transaction (early checkout)
+                $runningBalance -= $transaction->amount;
+
+                $entries[] = [
+                    'id' => $transaction->id,
+                    'reservation_id' => $transaction->reservation_id,
+                    'type' => 'refund',
+                    'date' => date('d/m/Y', strtotime($transaction->transaction_date)),
+                    'description' => $transaction->notes ?? ('استرجاع مبلغ - ' . ($transaction->reference ?? '')),
+                    'days' => null,
+                    'debit' => 0,
+                    'credit' => $transaction->amount,
+                    'balance' => $runningBalance
+                ];
             } else {
                 // Credit transaction (payment)
                 $runningBalance -= $transaction->amount;

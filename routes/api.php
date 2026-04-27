@@ -113,5 +113,6 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('accounting/customer-balances', [\App\Http\Controllers\Api\AccountingController::class, 'getCustomerBalances']);
     Route::get('accounting/monthly-report', [\App\Http\Controllers\Api\AccountingController::class, 'getMonthlyReport']);
     Route::get('accounting/report/pdf', [\App\Http\Controllers\Api\AccountingController::class, 'exportReportPdf']);
+    Route::get('accounting/monthly-report/pdf', [\App\Http\Controllers\Api\AccountingController::class, 'exportMonthlyReportPdf']);
     Route::get('accounting/report/excel', [\App\Http\Controllers\Api\AccountingController::class, 'exportReportExcel']);
 });
