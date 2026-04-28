@@ -13,14 +13,28 @@ class HotelSettingController extends Controller
     {
         $settings = HotelSetting::first();
         if ($settings) {
-            // Generate full URL matching the API base structure
-            $baseUrl = request()->getSchemeAndHttpHost() . '/hotel-backend/public';
-            $settings->logo_url = $settings->logo_path ? $baseUrl . '/storage/' . $settings->logo_path : null;
-            $settings->stamp_url = $settings->stamp_path ? $baseUrl . '/storage/' . $settings->stamp_path : null;
-            $settings->header_url = $settings->header_path ? $baseUrl . '/storage/' . $settings->header_path : null;
-            $settings->footer_url = $settings->footer_path ? $baseUrl . '/storage/' . $settings->footer_path : null;
+            $settings->logo_url = $settings->logo_path ? asset('storage/' . $settings->logo_path) : null;
+            $settings->stamp_url = $settings->stamp_path ? asset('storage/' . $settings->stamp_path) : null;
+            $settings->header_url = $settings->header_path ? asset('storage/' . $settings->header_path) : null;
+            $settings->footer_url = $settings->footer_path ? asset('storage/' . $settings->footer_path) : null;
+            $settings->e_stamp_url = $settings->e_stamp_path ? asset('storage/' . $settings->e_stamp_path) : null;
         }
         return response()->json($settings);
+    }
+
+    public function publicShow()
+    {
+        $settings = HotelSetting::first();
+        if ($settings) {
+            return response()->json([
+                'official_name' => $settings->official_name,
+                'logo_url' => $settings->logo_path ? asset('storage/' . $settings->logo_path) : null,
+            ]);
+        }
+        return response()->json([
+            'official_name' => 'Hotel Management System',
+            'logo_url' => null,
+        ]);
     }
 
     public function update(Request $request)
@@ -36,6 +50,7 @@ class HotelSettingController extends Controller
             'stamp' => ['nullable','image','max:2048'],
             'header' => ['nullable','image','max:2048'],
             'footer' => ['nullable','image','max:2048'],
+            'e_stamp' => ['nullable','image','max:2048'],
         ]);
 
         $settings = HotelSetting::firstOrNew([]);
@@ -72,15 +87,23 @@ class HotelSettingController extends Controller
             $settings->footer_path = $path;
         }
 
+        if ($request->hasFile('e_stamp')) {
+            if ($settings->e_stamp_path) {
+                Storage::disk('public')->delete($settings->e_stamp_path);
+            }
+            $path = $request->file('e_stamp')->store('e_stamps', 'public');
+            $settings->e_stamp_path = $path;
+        }
+
         $settings->fill($data);
         $settings->save();
 
-        // Add full URLs for images - matching the API base structure
-        $baseUrl = request()->getSchemeAndHttpHost() . '/hotel-backend/public';
-        $settings->logo_url = $settings->logo_path ? $baseUrl . '/storage/' . $settings->logo_path : null;
-        $settings->stamp_url = $settings->stamp_path ? $baseUrl . '/storage/' . $settings->stamp_path : null;
-        $settings->header_url = $settings->header_path ? $baseUrl . '/storage/' . $settings->header_path : null;
-        $settings->footer_url = $settings->footer_path ? $baseUrl . '/storage/' . $settings->footer_path : null;
+        // Use asset helper for full URLs
+        $settings->logo_url = $settings->logo_path ? asset('storage/' . $settings->logo_path) : null;
+        $settings->stamp_url = $settings->stamp_path ? asset('storage/' . $settings->stamp_path) : null;
+        $settings->header_url = $settings->header_path ? asset('storage/' . $settings->header_path) : null;
+        $settings->footer_url = $settings->footer_path ? asset('storage/' . $settings->footer_path) : null;
+        $settings->e_stamp_url = $settings->e_stamp_path ? asset('storage/' . $settings->e_stamp_path) : null;
 
         return response()->json($settings);
     }

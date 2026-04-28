@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Transaction;
 use App\Models\Cost;
 use App\Models\Customer;
+use App\Models\ReservationService;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Response;
@@ -78,11 +79,22 @@ class AccountingController extends Controller
             })
             ->toArray();
 
-        // Net profit (revenue - expenses - refunds)
-        $netProfit = $totalRevenue - $totalExpenses - $totalRefunds;
+        // Total service revenue
+        $serviceQuery = ReservationService::query();
+        if ($dateFrom) {
+            $serviceQuery->where('created_at', '>=', $dateFrom);
+        }
+        if ($dateTo) {
+            $serviceQuery->where('created_at', '<=', $dateTo);
+        }
+        $totalServiceRevenue = (float) $serviceQuery->sum('amount');
+
+        // Net profit (revenue + service revenue - expenses - refunds)
+        $netProfit = $totalRevenue + $totalServiceRevenue - $totalExpenses - $totalRefunds;
 
         return response()->json([
             'total_revenue' => $totalRevenue,
+            'total_service_revenue' => $totalServiceRevenue,
             'revenue_by_method' => $revenueByMethod,
             'total_debits' => $totalDebits,
             'total_refunds' => $totalRefunds,
@@ -579,10 +591,21 @@ class AccountingController extends Controller
             })
             ->toArray();
 
-        $netProfit = $totalRevenue - $totalExpenses;
+        // Service Revenue
+        $serviceQuery = ReservationService::query();
+        if ($dateFrom) {
+            $serviceQuery->where('created_at', '>=', $dateFrom);
+        }
+        if ($dateTo) {
+            $serviceQuery->where('created_at', '<=', $dateTo);
+        }
+        $totalServiceRevenue = (float) $serviceQuery->sum('amount');
+
+        $netProfit = $totalRevenue + $totalServiceRevenue - $totalExpenses;
 
         return [
             'total_revenue' => $totalRevenue,
+            'total_service_revenue' => $totalServiceRevenue,
             'revenue_by_method' => $revenueByMethod,
             'total_debits' => $totalDebits,
             'total_expenses' => $totalExpenses,
@@ -607,6 +630,7 @@ class AccountingController extends Controller
                 'revenue_total' => 0,
                 'revenue_cash' => 0,
                 'revenue_bank' => 0,
+                'service_revenue' => 0,
                 'expense_total' => 0,
                 'expense_cash' => 0,
                 'expense_bank' => 0,
@@ -636,6 +660,24 @@ class AccountingController extends Controller
                 } else {
                     $report[$day]['revenue_bank'] += (float) $rev->total;
                 }
+            }
+        }
+
+        // Get service revenue data
+        $services = ReservationService::whereYear('created_at', $year)
+            ->whereMonth('created_at', $month)
+            ->select(
+                DB::raw('DATE(created_at) as day'),
+                DB::raw('SUM(amount) as total')
+            )
+            ->groupBy('day')
+            ->get();
+
+        foreach ($services as $srv) {
+            $day = $srv->day;
+            if (isset($report[$day])) {
+                $report[$day]['service_revenue'] += (float) $srv->total;
+                $report[$day]['revenue_total'] += (float) $srv->total;
             }
         }
 
@@ -715,6 +757,7 @@ class AccountingController extends Controller
                 'revenue_total' => 0,
                 'revenue_cash' => 0,
                 'revenue_bank' => 0,
+                'service_revenue' => 0,
                 'expense_total' => 0,
                 'expense_cash' => 0,
                 'expense_bank' => 0,
@@ -749,6 +792,24 @@ class AccountingController extends Controller
                 $report[$day]['expense_total'] += (float) $exp->total;
                 if ($exp->payment_method === 'cash') $report[$day]['expense_cash'] += (float) $exp->total;
                 else $report[$day]['expense_bank'] += (float) $exp->total;
+            }
+        }
+
+        // Get service revenue data
+        $services = ReservationService::whereYear('created_at', $year)
+            ->whereMonth('created_at', $month)
+            ->select(
+                DB::raw('DATE(created_at) as day'),
+                DB::raw('SUM(amount) as total')
+            )
+            ->groupBy('day')
+            ->get();
+
+        foreach ($services as $srv) {
+            $day = $srv->day;
+            if (isset($report[$day])) {
+                $report[$day]['service_revenue'] += (float) $srv->total;
+                $report[$day]['revenue_total'] += (float) $srv->total;
             }
         }
 
@@ -791,43 +852,55 @@ class AccountingController extends Controller
 
         $pdf->SetFont('freeserif', 'B', 10);
         $pdf->SetFillColor(230, 230, 230);
-        $cols = [30, 31, 31, 31, 31, 31, 31, 31, 30];
-        $headers = ['التاريخ', 'صافي الإيراد', 'نقدي', 'بنك', 'الاسترجاع', 'المصاريف', 'نقدي', 'بنك', 'الصافي'];
-        foreach ($headers as $i => $h) $pdf->Cell($cols[$i], 10, $h, 1, 0, 'C', true);
-        $pdf->Ln();
+        $pdf->Cell(22, 10, 'التاريخ', 1, 0, 'C', true);
+        $pdf->Cell(28, 10, 'إجمالي الإيراد', 1, 0, 'C', true);
+        $pdf->Cell(25, 10, 'نقدي', 1, 0, 'C', true);
+        $pdf->Cell(25, 10, 'بنك', 1, 0, 'C', true);
+        $pdf->Cell(25, 10, 'خدمات', 1, 0, 'C', true);
+        $pdf->Cell(25, 10, 'استرجاع', 1, 0, 'C', true);
+        $pdf->Cell(30, 10, 'إجمالي الصرف', 1, 0, 'C', true);
+        $pdf->Cell(25, 10, 'نقدي', 1, 0, 'C', true);
+        $pdf->Cell(25, 10, 'بنك', 1, 0, 'C', true);
+        $pdf->Cell(25, 10, 'الصافي', 1, 1, 'C', true);
 
         $pdf->SetFont('freeserif', '', 10);
-        $totals = ['rev' => 0, 'rev_c' => 0, 'rev_b' => 0, 'ref' => 0, 'exp' => 0, 'exp_c' => 0, 'exp_b' => 0, 'net' => 0];
+        $totals = ['rev' => 0, 'rev_c' => 0, 'rev_b' => 0, 'srv' => 0, 'ref' => 0, 'exp' => 0, 'exp_c' => 0, 'exp_b' => 0, 'net' => 0];
         foreach ($report as $day) {
-            $pdf->Cell($cols[0], 8, date('d-m-Y', strtotime($day['date'])), 1, 0, 'C');
-            $pdf->Cell($cols[1], 8, number_format($day['revenue_total'], 0, '.', ','), 1, 0, 'C');
-            $pdf->Cell($cols[2], 8, number_format($day['revenue_cash'], 0, '.', ','), 1, 0, 'C');
-            $pdf->Cell($cols[3], 8, number_format($day['revenue_bank'], 0, '.', ','), 1, 0, 'C');
-            $pdf->Cell($cols[4], 8, number_format($day['refund_total'], 0, '.', ','), 1, 0, 'C');
-            $pdf->Cell($cols[5], 8, number_format($day['expense_total'], 0, '.', ','), 1, 0, 'C');
-            $pdf->Cell($cols[6], 8, number_format($day['expense_cash'], 0, '.', ','), 1, 0, 'C');
-            $pdf->Cell($cols[7], 8, number_format($day['expense_bank'], 0, '.', ','), 1, 0, 'C');
-            if ($day['net'] < 0) $pdf->SetTextColor(200, 0, 0);
-            $pdf->Cell($cols[8], 8, number_format($day['net'], 0, '.', ','), 1, 1, 'C');
+            $pdf->Cell(22, 8, date('d-m-Y', strtotime($day['date'])), 1, 0, 'C');
+            $pdf->Cell(28, 8, number_format($day['revenue_total'], 0, '.', ','), 1, 0, 'C');
+            $pdf->Cell(25, 8, number_format($day['revenue_cash'], 0, '.', ','), 1, 0, 'C');
+            $pdf->Cell(25, 8, number_format($day['revenue_bank'], 0, '.', ','), 1, 0, 'C');
+            $pdf->Cell(25, 8, number_format($day['service_revenue'], 0, '.', ','), 1, 0, 'C');
+            $pdf->Cell(25, 8, number_format($day['refund_total'], 0, '.', ','), 1, 0, 'C');
+            $pdf->Cell(30, 8, number_format($day['expense_total'], 0, '.', ','), 1, 0, 'C');
+            $pdf->Cell(25, 8, number_format($day['expense_cash'], 0, '.', ','), 1, 0, 'C');
+            $pdf->Cell(25, 8, number_format($day['expense_bank'], 0, '.', ','), 1, 0, 'C');
+            $pdf->SetTextColor($day['net'] >= 0 ? 0 : 200, $day['net'] >= 0 ? 100 : 0, 0);
+            $pdf->Cell(25, 8, number_format($day['net'], 0, '.', ','), 1, 1, 'C');
             $pdf->SetTextColor(0, 0, 0);
 
-            $totals['rev'] += $day['revenue_total']; $totals['rev_c'] += $day['revenue_cash']; $totals['rev_b'] += $day['revenue_bank'];
+            $totals['rev'] += $day['revenue_total'];
+            $totals['rev_c'] += $day['revenue_cash'];
+            $totals['rev_b'] += $day['revenue_bank'];
+            $totals['srv'] += $day['service_revenue'];
             $totals['ref'] += $day['refund_total'];
-            $totals['exp'] += $day['expense_total']; $totals['exp_c'] += $day['expense_cash']; $totals['exp_b'] += $day['expense_bank'];
+            $totals['exp'] += $day['expense_total'];
+            $totals['exp_c'] += $day['expense_cash'];
+            $totals['exp_b'] += $day['expense_bank'];
             $totals['net'] += $day['net'];
         }
-
-        $pdf->SetFont('freeserif', 'B', 11);
-        $pdf->SetFillColor(240, 240, 240);
-        $pdf->Cell($cols[0], 10, 'الإجمالي', 1, 0, 'C', true);
-        $pdf->Cell($cols[1], 10, number_format($totals['rev'], 0, '.', ','), 1, 0, 'C', true);
-        $pdf->Cell($cols[2], 10, number_format($totals['rev_c'], 0, '.', ','), 1, 0, 'C', true);
-        $pdf->Cell($cols[3], 10, number_format($totals['rev_b'], 0, '.', ','), 1, 0, 'C', true);
-        $pdf->Cell($cols[4], 10, number_format($totals['ref'], 0, '.', ','), 1, 0, 'C', true);
-        $pdf->Cell($cols[5], 10, number_format($totals['exp'], 0, '.', ','), 1, 0, 'C', true);
-        $pdf->Cell($cols[6], 10, number_format($totals['exp_c'], 0, '.', ','), 1, 0, 'C', true);
-        $pdf->Cell($cols[7], 10, number_format($totals['exp_b'], 0, '.', ','), 1, 0, 'C', true);
-        $pdf->Cell($cols[8], 10, number_format($totals['net'], 0, '.', ','), 1, 1, 'C', true);
+        $pdf->SetFont('freeserif', 'B', 10);
+        $pdf->SetFillColor(230, 230, 230);
+        $pdf->Cell(22, 10, 'الإجمالي', 1, 0, 'C', true);
+        $pdf->Cell(28, 10, number_format($totals['rev'], 0, '.', ','), 1, 0, 'C', true);
+        $pdf->Cell(25, 10, number_format($totals['rev_c'], 0, '.', ','), 1, 0, 'C', true);
+        $pdf->Cell(25, 10, number_format($totals['rev_b'], 0, '.', ','), 1, 0, 'C', true);
+        $pdf->Cell(25, 10, number_format($totals['srv'], 0, '.', ','), 1, 0, 'C', true);
+        $pdf->Cell(25, 10, number_format($totals['ref'], 0, '.', ','), 1, 0, 'C', true);
+        $pdf->Cell(30, 10, number_format($totals['exp'], 0, '.', ','), 1, 0, 'C', true);
+        $pdf->Cell(25, 10, number_format($totals['exp_c'], 0, '.', ','), 1, 0, 'C', true);
+        $pdf->Cell(25, 10, number_format($totals['exp_b'], 0, '.', ','), 1, 0, 'C', true);
+        $pdf->Cell(25, 10, number_format($totals['net'], 0, '.', ','), 1, 1, 'C', true);
         $pdf->Ln(5);
 
         $filename = "monthly_report_{$year}_{$month}.pdf";

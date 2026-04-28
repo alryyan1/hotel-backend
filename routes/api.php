@@ -20,6 +20,9 @@ Route::prefix('public')->group(function () {
 
     // Reservation creation
     Route::post('reservations', [\App\Http\Controllers\Api\ReservationController::class, 'store']);
+
+    // Public hotel settings
+    Route::get('settings/hotel', [\App\Http\Controllers\Api\HotelSettingController::class, 'publicShow']);
 });
 
 // Protected API
@@ -36,6 +39,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('customers/all', [\App\Http\Controllers\Api\CustomerController::class, 'fetchAll']);
     Route::apiResource('customers', \App\Http\Controllers\Api\CustomerController::class);
     Route::apiResource('users', \App\Http\Controllers\Api\UserController::class);
+    Route::apiResource('services', \App\Http\Controllers\Api\ServiceController::class);
+    Route::apiResource('reservation-services', \App\Http\Controllers\Api\ReservationServiceController::class);
 
     // Availability
     Route::get('availability', [\App\Http\Controllers\Api\AvailabilityController::class, 'search']);

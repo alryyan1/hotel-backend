@@ -23,6 +23,9 @@ class CustomerController extends Controller
             }], 'amount')
             ->withSum(['transactions as total_credit' => function ($query) {
                 $query->where('type', 'credit');
+            }], 'amount')
+            ->withSum(['transactions as total_refund' => function ($query) {
+                $query->where('type', 'refund');
             }], 'amount');
 
         // Search functionality
@@ -37,6 +40,15 @@ class CustomerController extends Controller
 
         $perPage = min((int) $request->get('per_page', 20), 100);
         $customers = $query->orderByDesc('id')->paginate($perPage);
+
+        // Adjust total_debit and total_credit on the collection
+        $customers->getCollection()->transform(function ($customer) {
+            $refund = $customer->total_refund ?? 0;
+            $customer->total_debit = ($customer->total_debit ?? 0) - $refund;
+            $customer->total_credit = ($customer->total_credit ?? 0) - $refund;
+            return $customer;
+        });
+
         return response()->json($customers);
     }
 
@@ -174,7 +186,8 @@ class CustomerController extends Controller
             ->where('type', 'refund')
             ->sum('amount');
 
-        $balance = $totalDebit - $totalCredit - $totalRefund;
+        // Refund is an offset of both room charge and payment, net zero on customer ledger.
+        $balance = $totalDebit - $totalCredit;
 
         return response()->json([
             'balance' => $balance,
@@ -195,10 +208,14 @@ class CustomerController extends Controller
         // Calculate ledger entries from transactions
         $ledgerEntries = $this->calculateLedgerFromTransactions($customer->transactions, $roomTypes);
 
+        $totalDebit = array_sum(array_column($ledgerEntries, 'debit'));
+        $totalCredit = array_sum(array_column($ledgerEntries, 'credit'));
+        $totalRefund = array_sum(array_column($ledgerEntries, 'refund_amount'));
+
         return response()->json([
             'ledger_entries' => $ledgerEntries,
-            'total_debit' => array_sum(array_column($ledgerEntries, 'debit')),
-            'total_credit' => array_sum(array_column($ledgerEntries, 'credit')),
+            'total_debit' => $totalDebit - $totalRefund,
+            'total_credit' => $totalCredit - $totalRefund,
             'final_balance' => end($ledgerEntries)['balance'] ?? 0,
         ]);
     }
@@ -243,38 +260,52 @@ class CustomerController extends Controller
         // Add a page
         $pdf->AddPage();
 
-        // Add logo image at the top (small size)
-        $logoImagePath = public_path('logo.png');
-        if (file_exists($logoImagePath)) {
-            try {
-                // Get image dimensions
-                $imageInfo = @getimagesize($logoImagePath);
-                if ($imageInfo !== false) {
-                    // Set small width for logo (20% of page width)
-                    $maxLogoWidth = $pageWidth * 0.2;
+        $settings = \App\Models\HotelSetting::first();
 
-                    // Calculate height maintaining aspect ratio
-                    $aspectRatio = $imageInfo[1] / $imageInfo[0];
-                    $logoWidthMM = $maxLogoWidth;
-                    $logoHeightMM = $logoWidthMM * $aspectRatio;
-
-                    // Temporarily disable RTL for image positioning (easier to calculate)
-                    $pdf->setRTL(false);
-
-                    // Position at top center (simple center calculation)
-                    $xPos = ($pageWidth - $logoWidthMM) / 2;
-                    $yPos = $topMargin;
-
-                    $pdf->Image($logoImagePath, $xPos, $yPos, $logoWidthMM, $logoHeightMM, 'PNG', '', '', false, 300, '', false, false, 0, false, false, false);
-
-                    // Re-enable RTL
-
-                    // Move Y position down after logo
-                    $pdf->SetY($yPos + $logoHeightMM + 5);
+        if ($settings && $settings->header_path) {
+            $headerImagePath = storage_path('app/public/' . $settings->header_path);
+            if (file_exists($headerImagePath)) {
+                try {
+                    $imageInfo = @getimagesize($headerImagePath);
+                    if ($imageInfo !== false) {
+                        $maxHeaderWidth = $pageWidth;
+                        $aspectRatio = $imageInfo[1] / $imageInfo[0];
+                        $headerWidthMM = $maxHeaderWidth;
+                        $headerHeightMM = $headerWidthMM * $aspectRatio;
+                        
+                        $pdf->setRTL(false);
+                        $pdf->Image($headerImagePath, 0, 0, $headerWidthMM, $headerHeightMM, '', '', '', false, 300, '', false, false, 0, false, false, false);
+                        $pdf->setRTL(true);
+                        
+                        $pdf->SetY($headerHeightMM + 5);
+                    }
+                } catch (\Exception $e) {
+                    Log::warning('Failed to load header image: ' . $e->getMessage());
                 }
-            } catch (\Exception $e) {
-                // Silently continue if image fails to load
-                Log::warning('Failed to load logo image: ' . $e->getMessage());
+            }
+        } elseif ($settings && $settings->logo_path) {
+            // Fallback to logo if no header is present
+            $logoImagePath = storage_path('app/public/' . $settings->logo_path);
+            if (file_exists($logoImagePath)) {
+                try {
+                    $imageInfo = @getimagesize($logoImagePath);
+                    if ($imageInfo !== false) {
+                        $maxLogoWidth = $pageWidth * 0.2;
+                        $aspectRatio = $imageInfo[1] / $imageInfo[0];
+                        $logoWidthMM = $maxLogoWidth;
+                        $logoHeightMM = $logoWidthMM * $aspectRatio;
+
+                        $pdf->setRTL(false);
+                        $xPos = ($pageWidth - $logoWidthMM) / 2;
+                        $yPos = $topMargin;
+                        $pdf->Image($logoImagePath, $xPos, $yPos, $logoWidthMM, $logoHeightMM, '', '', '', false, 300, '', false, false, 0, false, false, false);
+                        
+                        $pdf->setRTL(true);
+                        $pdf->SetY($yPos + $logoHeightMM + 5);
+                    }
+                } catch (\Exception $e) {
+                    Log::warning('Failed to load logo image: ' . $e->getMessage());
+                }
             }
         }
 
@@ -341,35 +372,50 @@ class CustomerController extends Controller
         $pdf->SetFont('arial', '', 9);
         $totalDebit = 0;
         $totalCredit = 0;
+        $totalRefund = 0;
 
         foreach ($ledgerEntries as $entry) {
             $totalDebit += $entry['debit'];
             $totalCredit += $entry['credit'];
+            if (isset($entry['refund_amount'])) {
+                $totalRefund += $entry['refund_amount'];
+            }
 
             // RTL order: Balance, Credit, Debit, Days, Details, Description, Date
             // ... (inside foreach ($ledgerEntries as $entry) { ... )
 
-            // RTL order: Date, Description, Details, Days, Debit, Credit, Balance
-            $pdf->Cell($colDate, 7, $entry['date'], 1, 0, 'C');             // 1. Far Right
+            // Calculate required lines for description
+            $descLines = $pdf->getNumLines($entry['description'], $colDescription);
+            $rowHeight = max(8, $descLines * 5 + 2); // Minimum 8mm, expand as needed
 
-            $pdf->Cell($colDescription, 7, $entry['description'], 1, 0, 'C'); // 2. (Right align for description text)
+            // Check if we need a new page
+            if ($pdf->GetY() + $rowHeight > $pageHeight - $bottomMargin) {
+                $pdf->AddPage();
+            }
+
+            // Draw cells with MultiCell to allow natural wrapping and vertical centering
+            // RTL order: Date, Description, Details, Days, Debit, Credit, Balance
+            
+            $pdf->MultiCell($colDate, $rowHeight, $entry['date'], 1, 'C', false, 0, '', '', true, 0, false, true, $rowHeight, 'M');
+            
+            $pdf->MultiCell($colDescription, $rowHeight, $entry['description'], 1, 'C', false, 0, '', '', true, 0, false, true, $rowHeight, 'M');
 
             $details = $entry['type'] === 'reservation'
                 ? ($entry['rooms'] ?? '')
                 : ($entry['paymentMethod'] ?? '');
-            $pdf->Cell($colDetails, 7, $details, 1, 0, 'C');                // 3.
+            $pdf->MultiCell($colDetails, $rowHeight, $details, 1, 'C', false, 0, '', '', true, 0, false, true, $rowHeight, 'M');
 
             $days = $entry['days'] ?? '-';
-            $pdf->Cell($colDays, 7, $days, 1, 0, 'C');                      // 4.
+            $pdf->MultiCell($colDays, $rowHeight, $days, 1, 'C', false, 0, '', '', true, 0, false, true, $rowHeight, 'M');
 
             $debit = $entry['debit'] > 0 ? number_format($entry['debit'], 0, '.', ',') : '-';
-            $pdf->Cell($colDebit, 7, $debit, 1, 0, 'C');                    // 5.
+            $pdf->MultiCell($colDebit, $rowHeight, $debit, 1, 'C', false, 0, '', '', true, 0, false, true, $rowHeight, 'M');
 
             $credit = $entry['credit'] > 0 ? number_format($entry['credit'], 0, '.', ',') : '-';
-            $pdf->Cell($colCredit, 7, $credit, 1, 0, 'C');                  // 6.
+            $pdf->MultiCell($colCredit, $rowHeight, $credit, 1, 'C', false, 0, '', '', true, 0, false, true, $rowHeight, 'M');
 
             $balance = number_format($entry['balance'], 0, '.', ',');
-            $pdf->Cell($colBalance, 7, $balance, 1, 1, 'C');                // 7. Far Left (1, 1 moves to the next line)
+            $pdf->MultiCell($colBalance, $rowHeight, $balance, 1, 'C', false, 1, '', '', true, 0, false, true, $rowHeight, 'M');
 
             // ... (end of foreach loop)
         }
@@ -378,11 +424,15 @@ class CustomerController extends Controller
         $pdf->SetFont('arial', 'B', 10);
         $pdf->SetFillColor(240, 240, 240);
         $totalColSpan = $colDate + $colDescription + $colDetails + $colDays; // 22+51+34+17 = 124
-        $finalBalance = $totalDebit - $totalCredit;
+        
+        // Deduct refunds from totals to show net paid amount
+        $netDebit = $totalDebit - $totalRefund;
+        $netCredit = $totalCredit - $totalRefund;
+        $finalBalance = $netDebit - $netCredit;
 
         $pdf->Cell($totalColSpan, 8, 'الإجمالي', 1, 0, 'C', true);
-        $pdf->Cell($colDebit, 8, number_format($totalDebit, 0, '.', ','), 1, 0, 'C', true);
-        $pdf->Cell($colCredit, 8, number_format($totalCredit, 0, '.', ','), 1, 0, 'C', true);
+        $pdf->Cell($colDebit, 8, number_format($netDebit, 0, '.', ','), 1, 0, 'C', true);
+        $pdf->Cell($colCredit, 8, number_format($netCredit, 0, '.', ','), 1, 0, 'C', true);
         $pdf->Cell($colBalance, 8, number_format($finalBalance, 0, '.', ','), 1, 1, 'C', true);
 
         $pdf->Ln(5);
@@ -391,44 +441,77 @@ class CustomerController extends Controller
         $pdf->SetFont('arial', 'B', 12);
         $pdf->Cell(0, 8, 'الرصيد النهائي: ' . number_format($finalBalance, 0, '.', ','), 0, 1, 'R');
 
-        // Add footer image at the bottom of the page
-        $footerImagePath = public_path('footer.png');
-        if (file_exists($footerImagePath)) {
-            try {
-                // Get image dimensions
-                $imageInfo = @getimagesize($footerImagePath);
-                if ($imageInfo !== false) {
-                    // Set maximum width for footer (90% of page width)
-                    $maxFooterWidth = $pageWidth * 0.9;
-
-                    // Calculate height maintaining aspect ratio
-                    $aspectRatio = $imageInfo[1] / $imageInfo[0];
-                    $footerWidthMM = $maxFooterWidth;
-                    $footerHeightMM = $footerWidthMM * $aspectRatio;
-
-                    // Get current Y position
-                    $currentY = $pdf->GetY();
-
-                    // Check if we need a new page for footer
-                    if ($currentY + $footerHeightMM + $bottomMargin > $pageHeight - $bottomMargin) {
-                        $pdf->AddPage();
+        if ($settings && $settings->stamp_path) {
+            $stampImagePath = storage_path('app/public/' . $settings->stamp_path);
+            if (file_exists($stampImagePath)) {
+                try {
+                    $imageInfo = @getimagesize($stampImagePath);
+                    if ($imageInfo !== false) {
+                        $stampWidthMM = 40;
+                        $aspectRatio = $imageInfo[1] / $imageInfo[0];
+                        $stampHeightMM = $stampWidthMM * $aspectRatio;
+                        
+                        $currentY = $pdf->GetY();
+                        $pdf->setRTL(false);
+                        $xPos = $leftMargin; // left side
+                        $pdf->Image($stampImagePath, $xPos, $currentY + 5, $stampWidthMM, $stampHeightMM, '', '', '', false, 300, '', false, false, 0, false, false, false);
+                        $pdf->SetY($currentY + $stampHeightMM + 10);
+                        $pdf->setRTL(true);
                     }
-
-                    // Temporarily disable RTL for image positioning
-                    $pdf->setRTL(false);
-
-                    // Position footer at the very bottom of the page
-                    $xPos = ($pageWidth - $footerWidthMM) / 2;
-                    $yPos = $pageHeight - $footerHeightMM - $bottomMargin;
-
-                    $pdf->Image($footerImagePath, $xPos, $yPos, $footerWidthMM, $footerHeightMM, 'PNG', '', '', false, 300, '', false, false, 0, false, false, false);
-
-                    // Re-enable RTL
-                    $pdf->setRTL(true);
+                } catch (\Exception $e) {
+                    Log::warning('Failed to load stamp image: ' . $e->getMessage());
                 }
-            } catch (\Exception $e) {
-                // Silently continue if image fails to load
-                Log::warning('Failed to load footer image: ' . $e->getMessage());
+            }
+        }
+
+        if ($settings && $settings->e_stamp_path) {
+            $eStampImagePath = storage_path('app/public/' . $settings->e_stamp_path);
+            if (file_exists($eStampImagePath)) {
+                try {
+                    $imageInfo = @getimagesize($eStampImagePath);
+                    if ($imageInfo !== false) {
+                        $stampWidthMM = 40;
+                        $aspectRatio = $imageInfo[1] / $imageInfo[0];
+                        $stampHeightMM = $stampWidthMM * $aspectRatio;
+                        
+                        $currentY = $pdf->GetY(); // Getting the Y after the normal stamp updated it
+                        $pdf->setRTL(false);
+                        $xPos = $leftMargin; // left side
+                        $pdf->Image($eStampImagePath, $xPos, $currentY, $stampWidthMM, $stampHeightMM, '', '', '', false, 300, '', false, false, 0, false, false, false);
+                        $pdf->SetY($currentY + $stampHeightMM + 5);
+                        $pdf->setRTL(true);
+                    }
+                } catch (\Exception $e) {
+                    Log::warning('Failed to load e-stamp image: ' . $e->getMessage());
+                }
+            }
+        }
+
+        if ($settings && $settings->footer_path) {
+            $footerImagePath = storage_path('app/public/' . $settings->footer_path);
+            if (file_exists($footerImagePath)) {
+                try {
+                    $imageInfo = @getimagesize($footerImagePath);
+                    if ($imageInfo !== false) {
+                        $maxFooterWidth = $pageWidth;
+                        $aspectRatio = $imageInfo[1] / $imageInfo[0];
+                        $footerWidthMM = $maxFooterWidth;
+                        $footerHeightMM = $footerWidthMM * $aspectRatio;
+
+                        $currentY = $pdf->GetY();
+                        // Make sure we have space for footer
+                        if ($currentY + $footerHeightMM > $pageHeight) {
+                            $pdf->AddPage();
+                        }
+
+                        $pdf->setRTL(false);
+                        $yPos = $pageHeight - $footerHeightMM;
+                        $pdf->Image($footerImagePath, 0, $yPos, $footerWidthMM, $footerHeightMM, '', '', '', false, 300, '', false, false, 0, false, false, false);
+                        $pdf->setRTL(true);
+                    }
+                } catch (\Exception $e) {
+                    Log::warning('Failed to load footer image: ' . $e->getMessage());
+                }
             }
         }
 
@@ -501,17 +584,21 @@ class CustomerController extends Controller
                 }
             } elseif ($transaction->type === 'refund') {
                 // Refund transaction (early checkout)
-                $runningBalance -= $transaction->amount;
+                // As per user request, refund shouldn't be counted as credit or affect balance directly in the ledger table
+                
+                $notes = $transaction->notes ?? ('استرجاع مبلغ - ' . ($transaction->reference ?? ''));
+                $description = $notes . ' (المبلغ: ' . number_format($transaction->amount, 0, '.', ',') . ')';
 
                 $entries[] = [
                     'id' => $transaction->id,
                     'reservation_id' => $transaction->reservation_id,
                     'type' => 'refund',
                     'date' => date('d/m/Y', strtotime($transaction->transaction_date)),
-                    'description' => $transaction->notes ?? ('استرجاع مبلغ - ' . ($transaction->reference ?? '')),
+                    'description' => $description,
                     'days' => null,
                     'debit' => 0,
-                    'credit' => $transaction->amount,
+                    'credit' => 0,
+                    'refund_amount' => $transaction->amount,
                     'balance' => $runningBalance
                 ];
             } else {
