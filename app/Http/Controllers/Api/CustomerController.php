@@ -294,7 +294,7 @@ class CustomerController extends Controller
                 try {
                     $imageInfo = @getimagesize($logoImagePath);
                     if ($imageInfo !== false) {
-                        $maxLogoWidth = $pageWidth * 0.2;
+                        $maxLogoWidth = $pageWidth * 0.15;
                         $aspectRatio = $imageInfo[1] / $imageInfo[0];
                         $logoWidthMM = $maxLogoWidth;
                         $logoHeightMM = $logoWidthMM * $aspectRatio;

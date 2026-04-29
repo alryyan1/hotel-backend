@@ -27,83 +27,11 @@ class AccountingController extends Controller
         $dateFrom = $request->get('date_from');
         $dateTo = $request->get('date_to');
 
-        $transactionQuery = Transaction::query();
-        $costQuery = Cost::query();
+        $summary = $this->getSummaryData($dateFrom, $dateTo);
+        $summary['date_from'] = $dateFrom;
+        $summary['date_to'] = $dateTo;
 
-        if ($dateFrom) {
-            $transactionQuery->where('transaction_date', '>=', $dateFrom);
-            $costQuery->where('date', '>=', $dateFrom);
-        }
-
-        if ($dateTo) {
-            $transactionQuery->where('transaction_date', '<=', $dateTo);
-            $costQuery->where('date', '<=', $dateTo);
-        }
-
-        // Total revenue (credit transactions)
-        $totalRevenue = (float) $transactionQuery->clone()
-            ->where('type', 'credit')
-            ->sum('amount');
-
-        // Payment method breakdown for revenue
-        $revenueByMethod = $transactionQuery->clone()
-            ->where('type', 'credit')
-            ->select('method', DB::raw('SUM(amount) as total'))
-            ->groupBy('method')
-            ->get()
-            ->mapWithKeys(function ($item) {
-                return [$item->method => (float) $item->total];
-            })
-            ->toArray();
-
-        // Total debits (reservation transactions)
-        $totalDebits = (float) $transactionQuery->clone()
-            ->where('type', 'debit')
-            ->sum('amount');
-
-        // Total refunds (early checkout refunds)
-        $totalRefunds = (float) $transactionQuery->clone()
-            ->where('type', 'refund')
-            ->sum('amount');
-
-        // Total expenses (costs)
-        $totalExpenses = (float) $costQuery->clone()->sum('amount');
-
-        // Payment method breakdown for expenses
-        $expensesByMethod = $costQuery->clone()
-            ->select('payment_method', DB::raw('SUM(amount) as total'))
-            ->groupBy('payment_method')
-            ->get()
-            ->mapWithKeys(function ($item) {
-                return [$item->payment_method ?: 'unknown' => (float) $item->total];
-            })
-            ->toArray();
-
-        // Total service revenue
-        $serviceQuery = ReservationService::query();
-        if ($dateFrom) {
-            $serviceQuery->where('created_at', '>=', $dateFrom);
-        }
-        if ($dateTo) {
-            $serviceQuery->where('created_at', '<=', $dateTo);
-        }
-        $totalServiceRevenue = (float) $serviceQuery->sum('amount');
-
-        // Net profit (revenue + service revenue - expenses - refunds)
-        $netProfit = $totalRevenue + $totalServiceRevenue - $totalExpenses - $totalRefunds;
-
-        return response()->json([
-            'total_revenue' => $totalRevenue,
-            'total_service_revenue' => $totalServiceRevenue,
-            'revenue_by_method' => $revenueByMethod,
-            'total_debits' => $totalDebits,
-            'total_refunds' => $totalRefunds,
-            'total_expenses' => $totalExpenses,
-            'expenses_by_method' => $expensesByMethod,
-            'net_profit' => $netProfit,
-            'date_from' => $dateFrom,
-            'date_to' => $dateTo,
-        ]);
+        return response()->json($summary);
     }
 
     /**
@@ -266,12 +194,14 @@ class AccountingController extends Controller
         // Logo from Settings
         $settings = \App\Models\HotelSetting::first();
         $logoImagePath = null;
-        if ($settings && $settings->logo_path) {
-            $logoImagePath = storage_path('app/public/' . $settings->logo_path);
-        }
-
-        if (!$logoImagePath || !file_exists($logoImagePath)) {
-            $logoImagePath = public_path('logo.png');
+        if ($settings) {
+            $logoPath = $settings->header_path ?? $settings->logo_path;
+            if ($logoPath) {
+                $logoImagePath = storage_path('app/public/' . $logoPath);
+                if (!file_exists($logoImagePath)) {
+                    $logoImagePath = public_path('storage/' . $logoPath);
+                }
+            }
         }
 
         if (file_exists($logoImagePath)) {
@@ -368,7 +298,7 @@ class AccountingController extends Controller
                 $pdf->Cell($colType, 6, $typeLabel, 1, 0, 'C', fill: true);
                 $pdf->Cell($colCustomer, 6, $transaction->customer->name ?? '-', 1, 0, 'C', fill: true);
                 $pdf->Cell($colAmount, 6, number_format($transaction->amount, 0, '.', ','), 1, 0, 'C', fill: true);
-                $methodLabels = ['cash' => 'نقدي', 'bankak' => 'بنكاك', 'Ocash' => 'أوكاش', 'fawri' => 'فوري'];
+                $methodLabels = ['cash' => 'نقدي', 'bankak' => 'بنكك', 'Ocash' => 'أوكاش', 'fawri' => 'فوري'];
                 $pdf->Cell($colMethod, 6, $methodLabels[$transaction->method] ?? '-', 1, 1, 'C', fill: true);
             }
             $pdf->setTextColor(0, 0, 0);
@@ -412,8 +342,13 @@ class AccountingController extends Controller
         }
 
         // Footer
-        $footerImagePath = public_path('footer.png');
-        if (file_exists($footerImagePath)) {
+        if ($settings && $settings->footer_path) {
+            $footerImagePath = storage_path('app/public/' . $settings->footer_path);
+            if (!file_exists($footerImagePath)) {
+                $footerImagePath = public_path('storage/' . $settings->footer_path);
+            }
+
+            if (file_exists($footerImagePath)) {
             try {
                 $imageInfo = @getimagesize($footerImagePath);
                 if ($imageInfo !== false) {
@@ -437,12 +372,13 @@ class AccountingController extends Controller
                 Log::warning('Failed to load footer image: ' . $e->getMessage());
             }
         }
-
-        $filename = 'accounting_report_' . date('Y-m-d') . '.pdf';
-        return response($pdf->Output($filename, 'S'), 200)
-            ->header('Content-Type', 'application/pdf')
-            ->header('Content-Disposition', 'attachment; filename="' . $filename . '"');
     }
+
+    $filename = 'accounting_report_' . date('Y-m-d') . '.pdf';
+    return response($pdf->Output($filename, 'S'), 200)
+        ->header('Content-Type', 'application/pdf')
+        ->header('Content-Disposition', 'attachment; filename="' . $filename . '"');
+}
 
     /**
      * Export accounting report as Excel
@@ -570,6 +506,109 @@ class AccountingController extends Controller
     /**
      * Helper method to get summary data
      */
+    public function exportNetBreakdownPdf(Request $request): Response
+    {
+        $dateFrom = $request->get('date_from');
+        $dateTo = $request->get('date_to');
+
+        $summary = $this->getSummaryData($dateFrom, $dateTo);
+
+        // Create PDF with RTL support
+        $pdf = new \TCPDF('P', 'mm', 'A4', true, 'UTF-8', false);
+        $pdf->SetCreator('Hotel Management System');
+        $pdf->SetAuthor('Hotel Management System');
+        $pdf->SetTitle('تقرير تفصيل الصافي');
+        $pdf->SetSubject('Net Breakdown Report');
+
+        // Remove default header/footer
+        $pdf->setPrintHeader(false);
+        $pdf->setPrintFooter(false);
+
+        // Set margins
+        $leftMargin = 15;
+        $rightMargin = 15;
+        $topMargin = 15;
+        $bottomMargin = 15;
+        $pdf->SetMargins($leftMargin, $topMargin, $rightMargin);
+        $pdf->SetAutoPageBreak(true, $bottomMargin);
+
+        // Set RTL direction
+        $pdf->setRTL(true);
+
+        // Add a page
+        $pdf->AddPage();
+
+        $pageWidth = 210;
+        // Title
+        $pdf->SetFont('arial', 'B', 16);
+        $pdf->Cell(0, 10, 'تقرير تفصيل الصافي حسب طريقة الدفع', 0, 1, 'C');
+        
+        if ($dateFrom || $dateTo) {
+            $pdf->SetFont('arial', '', 10);
+            $period = 'الفترة: ' . ($dateFrom ?: '...') . ' إلى ' . ($dateTo ?: '...');
+            $pdf->Cell(0, 8, $period, 0, 1, 'C');
+        }
+        $pdf->Ln(5);
+
+        // Table Header
+        $pdf->SetFont('arial', 'B', 10);
+        $pdf->SetFillColor(230, 230, 230);
+
+        $colMethod = 35;
+        $colRooms = 30;
+        $colServices = 30;
+        $colExpenses = 30;
+        $colRefunds = 25;
+        $colNet = 30;
+
+        $pdf->Cell($colMethod, 10, 'طريقة الدفع', 1, 0, 'C', true);
+        $pdf->Cell($colRooms, 10, 'الايرادات', 1, 0, 'C', true);
+        $pdf->Cell($colServices, 10, 'الخدمات', 1, 0, 'C', true);
+        $pdf->Cell($colExpenses, 10, 'المصروف', 1, 0, 'C', true);
+        $pdf->Cell($colRefunds, 10, 'مسترجع', 1, 0, 'C', true);
+        $pdf->Cell($colNet, 10, 'الصافي', 1, 1, 'C', true);
+
+        // Table Body
+        $pdf->SetFont('arial', '', 10);
+        $methodLabels = ['cash' => 'نقدي', 'bankak' => 'بنكك', 'Ocash' => 'أوكاش', 'fawri' => 'فوري', 'unknown' => 'غير معروف'];
+        
+        $methods = array_unique(array_merge(
+            array_keys($summary['revenue_by_method'] ?? []),
+            array_keys($summary['services_by_method'] ?? []),
+            array_keys($summary['expenses_by_method'] ?? []),
+            array_keys($summary['refunds_by_method'] ?? [])
+        ));
+
+        foreach ($methods as $method) {
+            $rev = $summary['revenue_by_method'][$method] ?? 0;
+            $srv = $summary['services_by_method'][$method] ?? 0;
+            $exp = $summary['expenses_by_method'][$method] ?? 0;
+            $ref = $summary['refunds_by_method'][$method] ?? 0;
+            $net = ($rev + $srv) - $exp - $ref;
+
+            $pdf->Cell($colMethod, 8, $methodLabels[$method] ?? $method, 1, 0, 'C');
+            $pdf->Cell($colRooms, 8, number_format($rev, 0, '.', ','), 1, 0, 'C');
+            $pdf->Cell($colServices, 8, number_format($srv, 0, '.', ','), 1, 0, 'C');
+            $pdf->Cell($colExpenses, 8, number_format($exp, 0, '.', ','), 1, 0, 'C');
+            $pdf->Cell($colRefunds, 8, number_format($ref, 0, '.', ','), 1, 0, 'C');
+            $pdf->Cell($colNet, 8, number_format($net, 0, '.', ','), 1, 1, 'C');
+        }
+
+        // Totals Row
+        $pdf->SetFont('arial', 'B', 10);
+        $pdf->SetFillColor(245, 245, 245);
+        $pdf->Cell($colMethod, 8, 'الإجمالي', 1, 0, 'C', true);
+        $pdf->Cell($colRooms, 8, number_format($summary['total_revenue'], 0, '.', ','), 1, 0, 'C', true);
+        $pdf->Cell($colServices, 8, number_format($summary['total_service_revenue'], 0, '.', ','), 1, 0, 'C', true);
+        $pdf->Cell($colExpenses, 8, number_format($summary['total_expenses'], 0, '.', ','), 1, 0, 'C', true);
+        $pdf->Cell($colRefunds, 8, number_format($summary['total_refunds'], 0, '.', ','), 1, 0, 'C', true);
+        $pdf->Cell($colNet, 8, number_format($summary['net_profit'], 0, '.', ','), 1, 1, 'C', true);
+
+        $filename = 'net_breakdown_' . date('Y-m-d') . '.pdf';
+        return response($pdf->Output($filename, 'S'), 200)
+            ->header('Content-Type', 'application/pdf');
+    }
+
     private function getSummaryData(?string $dateFrom, ?string $dateTo): array
     {
         $transactionQuery = Transaction::query();
@@ -585,7 +624,10 @@ class AccountingController extends Controller
             $costQuery->where('date', '<=', $dateTo);
         }
 
-        $totalRevenue = (float) $transactionQuery->clone()->where('type', 'credit')->sum('amount');
+        // Total revenue (credit transactions)
+        $totalRevenue = (float) $transactionQuery->clone()
+            ->where('type', 'credit')
+            ->sum('amount');
 
         // Payment method breakdown for revenue
         $revenueByMethod = $transactionQuery->clone()
@@ -598,7 +640,28 @@ class AccountingController extends Controller
             })
             ->toArray();
 
-        $totalDebits = (float) $transactionQuery->clone()->where('type', 'debit')->sum('amount');
+        // Total debits (reservation transactions)
+        $totalDebits = (float) $transactionQuery->clone()
+            ->where('type', 'debit')
+            ->sum('amount');
+
+        // Total refunds (early checkout refunds)
+        $totalRefunds = (float) $transactionQuery->clone()
+            ->where('type', 'refund')
+            ->sum('amount');
+
+        // Payment method breakdown for refunds
+        $refundsByMethod = $transactionQuery->clone()
+            ->where('type', 'refund')
+            ->select('method', DB::raw('SUM(amount) as total'))
+            ->groupBy('method')
+            ->get()
+            ->mapWithKeys(function ($item) {
+                return [$item->method ?: 'cash' => (float) $item->total];
+            })
+            ->toArray();
+
+        // Total expenses (costs)
         $totalExpenses = (float) $costQuery->clone()->sum('amount');
 
         // Payment method breakdown for expenses
@@ -611,7 +674,7 @@ class AccountingController extends Controller
             })
             ->toArray();
 
-        // Service Revenue
+        // Total service revenue
         $serviceQuery = ReservationService::query();
         if ($dateFrom) {
             $serviceQuery->where('created_at', '>=', $dateFrom);
@@ -619,15 +682,31 @@ class AccountingController extends Controller
         if ($dateTo) {
             $serviceQuery->where('created_at', '<=', $dateTo);
         }
+
+        // Get service revenue breakdown by method
+        $serviceRevenueByMethod = $serviceQuery->clone()
+            ->select('payment_method', DB::raw('SUM(amount) as total'))
+            ->groupBy('payment_method')
+            ->get()
+            ->mapWithKeys(function ($item) {
+                return [$item->payment_method ?: 'cash' => (float) $item->total];
+            })
+            ->toArray();
+
+        // Total service revenue
         $totalServiceRevenue = (float) $serviceQuery->sum('amount');
 
-        $netProfit = $totalRevenue + $totalServiceRevenue - $totalExpenses;
+        // Net profit (revenue + service revenue - expenses - refunds)
+        $netProfit = $totalRevenue + $totalServiceRevenue - $totalExpenses - $totalRefunds;
 
         return [
             'total_revenue' => $totalRevenue,
             'total_service_revenue' => $totalServiceRevenue,
             'revenue_by_method' => $revenueByMethod,
+            'services_by_method' => $serviceRevenueByMethod,
             'total_debits' => $totalDebits,
+            'total_refunds' => $totalRefunds,
+            'refunds_by_method' => $refundsByMethod,
             'total_expenses' => $totalExpenses,
             'expenses_by_method' => $expensesByMethod,
             'net_profit' => $netProfit,
@@ -867,11 +946,14 @@ class AccountingController extends Controller
         // Logo from Settings
         $settings = \App\Models\HotelSetting::first();
         $logoImagePath = null;
-        if ($settings && $settings->logo_path) {
-            $logoImagePath = storage_path('app/public/' . $settings->logo_path);
-        }
-        if (!$logoImagePath || !file_exists($logoImagePath)) {
-            $logoImagePath = public_path('logo.png');
+        if ($settings) {
+            $logoPath = $settings->header_path ?? $settings->logo_path;
+            if ($logoPath) {
+                $logoImagePath = storage_path('app/public/' . $logoPath);
+                if (!file_exists($logoImagePath)) {
+                    $logoImagePath = public_path('storage/' . $logoPath);
+                }
+            }
         }
 
         if (file_exists($logoImagePath)) {

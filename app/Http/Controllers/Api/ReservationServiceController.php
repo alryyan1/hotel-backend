@@ -30,6 +30,7 @@ class ReservationServiceController extends Controller
             'room_id' => 'required|exists:rooms,id',
             'service_id' => 'required|exists:services,id',
             'amount' => 'required|numeric|min:0',
+            'payment_method' => 'nullable|string',
             'notes' => 'nullable|string|max:1000',
         ]);
 
@@ -49,6 +50,7 @@ class ReservationServiceController extends Controller
             'room_id' => 'sometimes|exists:rooms,id',
             'service_id' => 'sometimes|exists:services,id',
             'amount' => 'sometimes|numeric|min:0',
+            'payment_method' => 'nullable|string',
             'notes' => 'nullable|string|max:1000',
         ]);
 

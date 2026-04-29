@@ -418,6 +418,7 @@ class ReservationController extends Controller
                         'type' => 'refund',
                         'amount' => $refundAmount,
                         'currency' => 'SDG',
+                        'method' => request('refund_method', 'cash'),
                         'transaction_date' => $today,
                         'notes' => 'مغادرة مبكرة - استرجاع ' . $remainingDays . ' يوم (الموعد الأصلي: ' . $scheduledCheckOut . ')',
                         'reference' => 'REFUND-RES-' . $reservation->id,
@@ -770,39 +771,47 @@ class ReservationController extends Controller
         // Add a page
         $pdf->AddPage();
 
-        // Add logo image at the top (small size)
-        $logoImagePath = public_path('logo.png');
-        if (file_exists($logoImagePath)) {
-            try {
-                // Get image dimensions
-                $imageInfo = @getimagesize($logoImagePath);
-                if ($imageInfo !== false) {
-                    // Set small width for logo (20% of page width)
-                    $maxLogoWidth = $pageWidth * 0.2;
+        $settings = \App\Models\HotelSetting::first();
 
-                    // Calculate height maintaining aspect ratio
-                    $aspectRatio = $imageInfo[1] / $imageInfo[0];
-                    $logoWidthMM = $maxLogoWidth;
-                    $logoHeightMM = $logoWidthMM * $aspectRatio;
+        // Add logo image at the top (from settings)
+        $headerPath = $settings->header_path ?? $settings->logo_path;
+        if ($headerPath) {
+            $logoImagePath = storage_path('app/public/' . $headerPath);
+            if (!file_exists($logoImagePath)) {
+                $logoImagePath = public_path('storage/' . $headerPath);
+            }
 
-                    // Temporarily disable RTL for image positioning
-                    $pdf->setRTL(false);
+            if (file_exists($logoImagePath)) {
+                try {
+                    // Get image dimensions
+                    $imageInfo = @getimagesize($logoImagePath);
+                    if ($imageInfo !== false) {
+                        // Set smaller width for logo (15% of page width)
+                        $maxLogoWidth = $pageWidth * 0.15;
 
-                    // Position at top center
-                    $xPos = ($pageWidth - $logoWidthMM) / 2;
-                    $yPos = $topMargin;
+                        // Calculate height maintaining aspect ratio
+                        $aspectRatio = $imageInfo[1] / $imageInfo[0];
+                        $logoWidthMM = $maxLogoWidth;
+                        $logoHeightMM = $logoWidthMM * $aspectRatio;
 
-                    $pdf->Image($logoImagePath, $xPos, $yPos, $logoWidthMM, $logoHeightMM, 'PNG', '', '', false, 300, '', false, false, 0, false, false, false);
+                        // Temporarily disable RTL for image positioning
+                        $pdf->setRTL(false);
 
-                    // Re-enable RTL
-                    $pdf->setRTL(true);
+                        // Position at top center
+                        $xPos = ($pageWidth - $logoWidthMM) / 2;
+                        $yPos = $topMargin;
 
-                    // Move Y position down after logo
-                    $pdf->SetY($yPos + $logoHeightMM + 5);
+                        $pdf->Image($logoImagePath, $xPos, $yPos, $logoWidthMM, $logoHeightMM, '', '', '', false, 300, '', false, false, 0, false, false, false);
+
+                        // Re-enable RTL
+                        $pdf->setRTL(true);
+
+                        // Move Y position down after logo
+                        $pdf->SetY($yPos + $logoHeightMM + 5);
+                    }
+                } catch (\Exception $e) {
+                    Log::warning('Failed to load logo image: ' . $e->getMessage());
                 }
-            } catch (\Exception $e) {
-                // Silently continue if image fails to load
-                Log::warning('Failed to load logo image: ' . $e->getMessage());
             }
         }
 
@@ -923,31 +932,70 @@ class ReservationController extends Controller
             $pdf->Cell(0, 6, $info, 0, 1, 'R');
         }
 
-        // Add footer image at the bottom
-        $footerImagePath = public_path('footer.png');
-        if (file_exists($footerImagePath)) {
-            try {
-                $imageInfo = @getimagesize($footerImagePath);
-                if ($imageInfo !== false) {
-                    $maxFooterWidth = $pageWidth * 0.9;
-                    $aspectRatio = $imageInfo[1] / $imageInfo[0];
-                    $footerWidthMM = $maxFooterWidth;
-                    $footerHeightMM = $footerWidthMM * $aspectRatio;
+        // Add footer image at the bottom (from settings)
+        if ($settings->stamp_path || $settings->e_stamp_path) {
+            $stampPath = $settings->e_stamp_path ?? $settings->stamp_path;
+            $stampImagePath = storage_path('app/public/' . $stampPath);
+            if (!file_exists($stampImagePath)) {
+                $stampImagePath = public_path('storage/' . $stampPath);
+            }
 
-                    $currentY = $pdf->GetY();
-                    if ($currentY + $footerHeightMM + $bottomMargin > $pageHeight - $bottomMargin) {
-                        $pdf->AddPage();
+            if (file_exists($stampImagePath)) {
+                try {
+                    $imageInfo = @getimagesize($stampImagePath);
+                    if ($imageInfo !== false) {
+                        $stampWidthMM = 35;
+                        $aspectRatio = $imageInfo[1] / $imageInfo[0];
+                        $stampHeightMM = $stampWidthMM * $aspectRatio;
+
+                        $currentY = $pdf->GetY();
+                        if ($currentY + $stampHeightMM + $bottomMargin > $pageHeight - $bottomMargin) {
+                            $pdf->AddPage();
+                        }
+
+                        $pdf->setRTL(false);
+                        // Position stamp on the right side
+                        $xPos = $pageWidth - $rightMargin - $stampWidthMM - 5;
+                        $pdf->Image($stampImagePath, $xPos, $pdf->GetY() + 5, $stampWidthMM, $stampHeightMM, '', '', '', false, 300, '', false, false, 0, false, false, false);
+                        $pdf->setRTL(true);
+                        $pdf->SetY($pdf->GetY() + $stampHeightMM + 10);
                     }
-
-                    $pdf->setRTL(false);
-                    $xPos = ($pageWidth - $footerWidthMM) / 2;
-                    $yPos = $pageHeight - $footerHeightMM - $bottomMargin;
-
-                    $pdf->Image($footerImagePath, $xPos, $yPos, $footerWidthMM, $footerHeightMM, 'PNG', '', '', false, 300, '', false, false, 0, false, false, false);
-                    $pdf->setRTL(true);
+                } catch (\Exception $e) {
+                    Log::warning('Failed to load stamp image: ' . $e->getMessage());
                 }
-            } catch (\Exception $e) {
-                Log::warning('Failed to load footer image: ' . $e->getMessage());
+            }
+        }
+
+        if ($settings->footer_path) {
+            $footerImagePath = storage_path('app/public/' . $settings->footer_path);
+            if (!file_exists($footerImagePath)) {
+                $footerImagePath = public_path('storage/' . $settings->footer_path);
+            }
+
+            if (file_exists($footerImagePath)) {
+                try {
+                    $imageInfo = @getimagesize($footerImagePath);
+                    if ($imageInfo !== false) {
+                        $maxFooterWidth = $pageWidth * 0.9;
+                        $aspectRatio = $imageInfo[1] / $imageInfo[0];
+                        $footerWidthMM = $maxFooterWidth;
+                        $footerHeightMM = $footerWidthMM * $aspectRatio;
+
+                        $currentY = $pdf->GetY();
+                        if ($currentY + $footerHeightMM + $bottomMargin > $pageHeight - $bottomMargin) {
+                            $pdf->AddPage();
+                        }
+
+                        $pdf->setRTL(false);
+                        $xPos = ($pageWidth - $footerWidthMM) / 2;
+                        $yPos = $pageHeight - $footerHeightMM - $bottomMargin;
+
+                        $pdf->Image($footerImagePath, $xPos, $yPos, $footerWidthMM, $footerHeightMM, '', '', '', false, 300, '', false, false, 0, false, false, false);
+                        $pdf->setRTL(true);
+                    }
+                } catch (\Exception $e) {
+                    Log::warning('Failed to load footer image: ' . $e->getMessage());
+                }
             }
         }
 
