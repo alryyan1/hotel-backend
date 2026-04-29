@@ -263,13 +263,22 @@ class AccountingController extends Controller
         $pdf->setRTL(true);
         $pdf->AddPage();
 
-        // Logo
-        $logoImagePath = public_path('logo.png');
+        // Logo from Settings
+        $settings = \App\Models\HotelSetting::first();
+        $logoImagePath = null;
+        if ($settings && $settings->logo_path) {
+            $logoImagePath = storage_path('app/public/' . $settings->logo_path);
+        }
+
+        if (!$logoImagePath || !file_exists($logoImagePath)) {
+            $logoImagePath = public_path('logo.png');
+        }
+
         if (file_exists($logoImagePath)) {
             try {
                 $imageInfo = @getimagesize($logoImagePath);
                 if ($imageInfo !== false) {
-                    $maxLogoWidth = $pageWidth * 0.2;
+                    $maxLogoWidth = 25; // Smaller logo
                     $aspectRatio = $imageInfo[1] / $imageInfo[0];
                     $logoWidthMM = $maxLogoWidth;
                     $logoHeightMM = $logoWidthMM * $aspectRatio;
@@ -277,7 +286,7 @@ class AccountingController extends Controller
                     $pdf->setRTL(false);
                     $xPos = ($pageWidth - $logoWidthMM) / 2;
                     $yPos = $topMargin;
-                    $pdf->Image($logoImagePath, $xPos, $yPos, $logoWidthMM, $logoHeightMM, 'PNG', '', '', false, 300, '', false, false, 0, false, false, false);
+                    $pdf->Image($logoImagePath, $xPos, $yPos, $logoWidthMM, $logoHeightMM, '', '', '', false, 300, '', false, false, 0, false, false, false);
                     $pdf->setRTL(true);
                     $pdf->SetY($yPos + $logoHeightMM + 5);
                 }
@@ -332,38 +341,49 @@ class AccountingController extends Controller
             $colCustomer = 50;
             $colAmount = 35;
             $colMethod = 30;
-            $colRef = 30;
 
             $pdf->Cell($colDate, 7, 'التاريخ', 1, 0, 'C', true);
             $pdf->Cell($colType, 7, 'النوع', 1, 0, 'C', true);
             $pdf->Cell($colCustomer, 7, 'العميل', 1, 0, 'C', true);
             $pdf->Cell($colAmount, 7, 'المبلغ', 1, 0, 'C', true);
             $pdf->Cell($colMethod, 7, 'الطريقة', 1, 1, 'C', true);
-            // $pdf->Cell($colRef, 7, 'المرجع', 1, 1, 'C', true);
 
             $pdf->SetFont('arial', '', 8);
             foreach ($transactions as $transaction) {
-
-                //white color for the text
                 $pdf->setTextColor(255, 255, 255);
-                //light green if credit and light red if debit
-                $pdf->setFillColor($transaction->type === 'debit' ? 110 : 0, $transaction->type === 'debit' ? 0 : 110, 0);
-                $pdf->Cell($colDate, 6, date('d/m/Y', strtotime($transaction->transaction_date)), 1, 0, 'C', fill: true);
+                
+                // Color coding: Credit=Green, Debit=Red, Refund=Orange/Blue
+                if ($transaction->type === 'credit') {
+                    $pdf->setFillColor(0, 110, 0); // Green
+                    $typeLabel = 'دائن';
+                } elseif ($transaction->type === 'debit') {
+                    $pdf->setFillColor(110, 0, 0); // Red
+                    $typeLabel = 'مدين';
+                } else {
+                    $pdf->setFillColor(180, 90, 0); // Orange for Refund
+                    $typeLabel = 'مسترجع';
+                }
 
-                $pdf->Cell($colType, 6, $transaction->type === 'debit' ? 'مدين' : 'دائن', 1, 0, 'C', fill: true);
-                //green if credit and red if debit
+                $pdf->Cell($colDate, 6, date('d/m/Y', strtotime($transaction->transaction_date)), 1, 0, 'C', fill: true);
+                $pdf->Cell($colType, 6, $typeLabel, 1, 0, 'C', fill: true);
                 $pdf->Cell($colCustomer, 6, $transaction->customer->name ?? '-', 1, 0, 'C', fill: true);
                 $pdf->Cell($colAmount, 6, number_format($transaction->amount, 0, '.', ','), 1, 0, 'C', fill: true);
                 $methodLabels = ['cash' => 'نقدي', 'bankak' => 'بنكاك', 'Ocash' => 'أوكاش', 'fawri' => 'فوري'];
                 $pdf->Cell($colMethod, 6, $methodLabels[$transaction->method] ?? '-', 1, 1, 'C', fill: true);
-                // $pdf->Cell($colRef, 6, $transaction->reference ?? '-', 1, 1, 'C');
             }
+            $pdf->setTextColor(0, 0, 0);
         }
 
         $pdf->Ln(5);
 
-        // Customer Balances
+        // Customer Balances (Separate Page)
         if ($customerBalances->count() > 0) {
+            $pdf->AddPage();
+            
+            $pdf->SetFont('arial', 'B', 15);
+            $pdf->Cell(0, 10, 'تقرير أرصدة العملاء', 0, 1, 'C');
+            $pdf->Ln(5);
+
             $pdf->SetFont('arial', 'B', 12);
             $pdf->Cell(0, 8, 'أرصدة العملاء', 0, 1, 'R');
             $pdf->SetFont('arial', 'B', 9);
@@ -410,7 +430,7 @@ class AccountingController extends Controller
                     $pdf->setRTL(false);
                     $xPos = ($pageWidth - $footerWidthMM) / 2;
                     $yPos = $pageHeight - $footerHeightMM - $bottomMargin;
-                    $pdf->Image($footerImagePath, $xPos, $yPos, $footerWidthMM, $footerHeightMM, 'PNG', '', '', false, 300, '', false, false, 0, false, false, false);
+                    $pdf->Image($footerImagePath, $xPos, $yPos, $footerWidthMM, $footerHeightMM, '', '', '', false, 300, '', false, false, 0, false, false, false);
                     $pdf->setRTL(true);
                 }
             } catch (\Exception $e) {
@@ -843,6 +863,37 @@ class AccountingController extends Controller
         $pdf->SetAutoPageBreak(true, 10);
         $pdf->setRTL(true);
         $pdf->AddPage();
+
+        // Logo from Settings
+        $settings = \App\Models\HotelSetting::first();
+        $logoImagePath = null;
+        if ($settings && $settings->logo_path) {
+            $logoImagePath = storage_path('app/public/' . $settings->logo_path);
+        }
+        if (!$logoImagePath || !file_exists($logoImagePath)) {
+            $logoImagePath = public_path('logo.png');
+        }
+
+        if (file_exists($logoImagePath)) {
+            try {
+                $imageInfo = @getimagesize($logoImagePath);
+                if ($imageInfo !== false) {
+                    $maxLogoWidth = 20; // Even smaller logo for landscape
+                    $aspectRatio = $imageInfo[1] / $imageInfo[0];
+                    $logoWidthMM = $maxLogoWidth;
+                    $logoHeightMM = $logoWidthMM * $aspectRatio;
+
+                    $pdf->setRTL(false);
+                    // Place it on the right side since it's landscape RTL
+                    $xPos = 297 - 10 - $logoWidthMM;
+                    $yPos = 10;
+                    $pdf->Image($logoImagePath, $xPos, $yPos, $logoWidthMM, $logoHeightMM, '', '', '', false, 300, '', false, false, 0, false, false, false);
+                    $pdf->setRTL(true);
+                }
+            } catch (\Exception $e) {
+                Log::warning('Failed to load logo image: ' . $e->getMessage());
+            }
+        }
 
         $pdf->SetFont('freeserif', 'B', 18);
         $months = ["يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو", "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر"];

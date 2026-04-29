@@ -63,11 +63,13 @@ class CustomerController extends Controller
         try {
             $validated = $request->validate([
                 'name' => 'required|string|max:255',
+                'email' => 'nullable|email|max:255',
                 'phone' => 'nullable|string|max:50',
                 'national_id' => 'nullable|string|max:100|unique:customers,national_id',
                 'address' => 'nullable|string',
                 'date_of_birth' => 'nullable|date',
                 'gender' => 'nullable|in:male,female',
+                'type' => 'nullable|in:individual,company',
             ]);
 
             $customer = Customer::create($validated);
@@ -87,11 +89,13 @@ class CustomerController extends Controller
         try {
             $validated = $request->validate([
                 'name' => 'required|string|max:255',
+                'email' => 'nullable|email|max:255',
                 'phone' => 'nullable|string|max:50',
                 'national_id' => 'nullable|string|max:100|unique:customers,national_id,' . $customer->id,
                 'address' => 'nullable|string',
                 'date_of_birth' => 'nullable|date',
                 'gender' => 'nullable|in:male,female',
+                'type' => 'nullable|in:individual,company',
             ]);
 
             $customer->update($validated);
