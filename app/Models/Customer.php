@@ -41,11 +41,13 @@ class Customer extends Model
 {
     protected $fillable = [
         'name',
+        'email',
         'phone',
         'national_id',
         'address',
         'date_of_birth',
         'gender',
+        'type',
         'document_path',
     ];
 
