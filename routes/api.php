@@ -1,6 +1,5 @@
 <?php
 
-use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
 // Auth
@@ -40,6 +39,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::apiResource('customers', \App\Http\Controllers\Api\CustomerController::class);
     Route::apiResource('users', \App\Http\Controllers\Api\UserController::class);
     Route::apiResource('services', \App\Http\Controllers\Api\ServiceController::class);
+    Route::get('reservation-services/{reservationService}/pdf', [\App\Http\Controllers\Api\ReservationServiceController::class, 'exportPdf']);
     Route::apiResource('reservation-services', \App\Http\Controllers\Api\ReservationServiceController::class);
 
     // Availability
@@ -57,6 +57,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // Hotel settings
     Route::get('settings/hotel', [\App\Http\Controllers\Api\HotelSettingController::class, 'show']);
     Route::post('settings/hotel', [\App\Http\Controllers\Api\HotelSettingController::class, 'update']);
+    Route::delete('settings/hotel/image', [\App\Http\Controllers\Api\HotelSettingController::class, 'deleteImage']);
 
     // Payments
     Route::apiResource('payments', \App\Http\Controllers\Api\PaymentController::class);
@@ -101,9 +102,11 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // Inventory Orders
     Route::post('inventory-orders/{inventoryOrder}/approve', [\App\Http\Controllers\Api\InventoryOrderController::class, 'approve']);
+    Route::get('inventory-orders/{inventoryOrder}/pdf', [\App\Http\Controllers\Api\InventoryOrderController::class, 'exportPdf']);
     Route::apiResource('inventory-orders', \App\Http\Controllers\Api\InventoryOrderController::class);
 
     // Inventory Receipts (must come before inventory routes to avoid route conflicts)
+    Route::get('inventory-receipts/{inventoryReceipt}/pdf', [\App\Http\Controllers\Api\InventoryReceiptController::class, 'exportPdf']);
     Route::apiResource('inventory-receipts', \App\Http\Controllers\Api\InventoryReceiptController::class);
 
     // Cleaning Notifications

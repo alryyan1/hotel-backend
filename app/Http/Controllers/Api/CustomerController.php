@@ -445,6 +445,9 @@ class CustomerController extends Controller
         $pdf->SetFont('arial', 'B', 12);
         $pdf->Cell(0, 8, 'الرصيد النهائي: ' . number_format($finalBalance, 0, '.', ','), 0, 1, 'R');
 
+        // Disable auto page break temporarily to draw stamps and footer on the same page
+        $pdf->SetAutoPageBreak(false);
+
         if ($settings && $settings->stamp_path) {
             $stampImagePath = storage_path('app/public/' . $settings->stamp_path);
             if (file_exists($stampImagePath)) {
@@ -456,6 +459,8 @@ class CustomerController extends Controller
                         $stampHeightMM = $stampWidthMM * $aspectRatio;
                         
                         $currentY = $pdf->GetY();
+                        
+                        // If we are very close to the bottom, don't push to a new page, just draw
                         $pdf->setRTL(false);
                         $xPos = $leftMargin; // left side
                         $pdf->Image($stampImagePath, $xPos, $currentY + 5, $stampWidthMM, $stampHeightMM, '', '', '', false, 300, '', false, false, 0, false, false, false);
@@ -478,7 +483,7 @@ class CustomerController extends Controller
                         $aspectRatio = $imageInfo[1] / $imageInfo[0];
                         $stampHeightMM = $stampWidthMM * $aspectRatio;
                         
-                        $currentY = $pdf->GetY(); // Getting the Y after the normal stamp updated it
+                        $currentY = $pdf->GetY();
                         $pdf->setRTL(false);
                         $xPos = $leftMargin; // left side
                         $pdf->Image($eStampImagePath, $xPos, $currentY, $stampWidthMM, $stampHeightMM, '', '', '', false, 300, '', false, false, 0, false, false, false);
@@ -502,12 +507,7 @@ class CustomerController extends Controller
                         $footerWidthMM = $maxFooterWidth;
                         $footerHeightMM = $footerWidthMM * $aspectRatio;
 
-                        $currentY = $pdf->GetY();
-                        // Make sure we have space for footer
-                        if ($currentY + $footerHeightMM > $pageHeight) {
-                            $pdf->AddPage();
-                        }
-
+                        // Draw footer at the absolute bottom of the current page
                         $pdf->setRTL(false);
                         $yPos = $pageHeight - $footerHeightMM;
                         $pdf->Image($footerImagePath, 0, $yPos, $footerWidthMM, $footerHeightMM, '', '', '', false, 300, '', false, false, 0, false, false, false);
@@ -518,6 +518,9 @@ class CustomerController extends Controller
                 }
             }
         }
+
+        // Re-enable auto page break
+        $pdf->SetAutoPageBreak(true, $bottomMargin);
 
         // Generate PDF and return as response
         $filename = 'customer_ledger_' . $customer->id . '_' . date('Y-m-d') . '.pdf';
@@ -536,7 +539,7 @@ class CustomerController extends Controller
 
         $methodLabels = [
             'cash' => 'نقدي',
-            'bankak' => 'بنكاك',
+            'bankak' => 'بنكك',
             'Ocash' => 'أوكاش',
             'fawri' => 'فوري'
         ];

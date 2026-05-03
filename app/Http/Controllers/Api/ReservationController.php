@@ -861,40 +861,50 @@ class ReservationController extends Controller
 
         $settings = \App\Models\HotelSetting::first();
 
-        // Add logo image at the top (from settings)
-        $headerPath = $settings->header_path ?? $settings->logo_path;
-        if ($headerPath) {
-            $logoImagePath = storage_path('app/public/' . $headerPath);
-            if (!file_exists($logoImagePath)) {
-                $logoImagePath = public_path('storage/' . $headerPath);
+        if ($settings && $settings->header_path) {
+            $headerImagePath = storage_path('app/public/' . $settings->header_path);
+            if (!file_exists($headerImagePath)) {
+                $headerImagePath = public_path('storage/' . $settings->header_path);
             }
+            if (file_exists($headerImagePath)) {
+                try {
+                    $imageInfo = @getimagesize($headerImagePath);
+                    if ($imageInfo !== false) {
+                        $maxHeaderWidth = $pageWidth;
+                        $aspectRatio = $imageInfo[1] / $imageInfo[0];
+                        $headerWidthMM = $maxHeaderWidth;
+                        $headerHeightMM = $headerWidthMM * $aspectRatio;
 
+                        $pdf->setRTL(false);
+                        $pdf->Image($headerImagePath, 0, 0, $headerWidthMM, $headerHeightMM, '', '', '', false, 300, '', false, false, 0, false, false, false);
+                        $pdf->setRTL(true);
+
+                        $pdf->SetY($headerHeightMM + 5);
+                    }
+                } catch (\Exception $e) {
+                    Log::warning('Failed to load header image: ' . $e->getMessage());
+                }
+            }
+        } elseif ($settings && $settings->logo_path) {
+            $logoImagePath = storage_path('app/public/' . $settings->logo_path);
+            if (!file_exists($logoImagePath)) {
+                $logoImagePath = public_path('storage/' . $settings->logo_path);
+            }
             if (file_exists($logoImagePath)) {
                 try {
-                    // Get image dimensions
                     $imageInfo = @getimagesize($logoImagePath);
                     if ($imageInfo !== false) {
-                        // Set smaller width for logo (15% of page width)
                         $maxLogoWidth = $pageWidth * 0.15;
-
-                        // Calculate height maintaining aspect ratio
                         $aspectRatio = $imageInfo[1] / $imageInfo[0];
                         $logoWidthMM = $maxLogoWidth;
                         $logoHeightMM = $logoWidthMM * $aspectRatio;
 
-                        // Temporarily disable RTL for image positioning
                         $pdf->setRTL(false);
-
-                        // Position at top center
                         $xPos = ($pageWidth - $logoWidthMM) / 2;
                         $yPos = $topMargin;
-
                         $pdf->Image($logoImagePath, $xPos, $yPos, $logoWidthMM, $logoHeightMM, '', '', '', false, 300, '', false, false, 0, false, false, false);
-
-                        // Re-enable RTL
                         $pdf->setRTL(true);
 
-                        // Move Y position down after logo
                         $pdf->SetY($yPos + $logoHeightMM + 5);
                     }
                 } catch (\Exception $e) {
@@ -1020,33 +1030,28 @@ class ReservationController extends Controller
             $pdf->Cell(0, 6, $info, 0, 1, 'R');
         }
 
-        // Add footer image at the bottom (from settings)
-        if ($settings->stamp_path || $settings->e_stamp_path) {
-            $stampPath = $settings->e_stamp_path ?? $settings->stamp_path;
-            $stampImagePath = storage_path('app/public/' . $stampPath);
-            if (!file_exists($stampImagePath)) {
-                $stampImagePath = public_path('storage/' . $stampPath);
-            }
+        // Disable auto page break before stamps and footer
+        $pdf->SetAutoPageBreak(false);
 
+        if ($settings && $settings->stamp_path) {
+            $stampImagePath = storage_path('app/public/' . $settings->stamp_path);
+            if (!file_exists($stampImagePath)) {
+                $stampImagePath = public_path('storage/' . $settings->stamp_path);
+            }
             if (file_exists($stampImagePath)) {
                 try {
                     $imageInfo = @getimagesize($stampImagePath);
                     if ($imageInfo !== false) {
-                        $stampWidthMM = 35;
+                        $stampWidthMM = 40;
                         $aspectRatio = $imageInfo[1] / $imageInfo[0];
                         $stampHeightMM = $stampWidthMM * $aspectRatio;
 
                         $currentY = $pdf->GetY();
-                        if ($currentY + $stampHeightMM + $bottomMargin > $pageHeight - $bottomMargin) {
-                            $pdf->AddPage();
-                        }
-
                         $pdf->setRTL(false);
-                        // Position stamp on the right side
-                        $xPos = $pageWidth - $rightMargin - $stampWidthMM - 5;
-                        $pdf->Image($stampImagePath, $xPos, $pdf->GetY() + 5, $stampWidthMM, $stampHeightMM, '', '', '', false, 300, '', false, false, 0, false, false, false);
+                        $xPos = $leftMargin;
+                        $pdf->Image($stampImagePath, $xPos, $currentY + 5, $stampWidthMM, $stampHeightMM, '', '', '', false, 300, '', false, false, 0, false, false, false);
+                        $pdf->SetY($currentY + $stampHeightMM + 10);
                         $pdf->setRTL(true);
-                        $pdf->SetY($pdf->GetY() + $stampHeightMM + 10);
                     }
                 } catch (\Exception $e) {
                     Log::warning('Failed to load stamp image: ' . $e->getMessage());
@@ -1054,31 +1059,49 @@ class ReservationController extends Controller
             }
         }
 
-        if ($settings->footer_path) {
+        if ($settings && $settings->e_stamp_path) {
+            $eStampImagePath = storage_path('app/public/' . $settings->e_stamp_path);
+            if (!file_exists($eStampImagePath)) {
+                $eStampImagePath = public_path('storage/' . $settings->e_stamp_path);
+            }
+            if (file_exists($eStampImagePath)) {
+                try {
+                    $imageInfo = @getimagesize($eStampImagePath);
+                    if ($imageInfo !== false) {
+                        $stampWidthMM = 40;
+                        $aspectRatio = $imageInfo[1] / $imageInfo[0];
+                        $stampHeightMM = $stampWidthMM * $aspectRatio;
+
+                        $currentY = $pdf->GetY();
+                        $pdf->setRTL(false);
+                        $xPos = $leftMargin;
+                        $pdf->Image($eStampImagePath, $xPos, $currentY, $stampWidthMM, $stampHeightMM, '', '', '', false, 300, '', false, false, 0, false, false, false);
+                        $pdf->SetY($currentY + $stampHeightMM + 5);
+                        $pdf->setRTL(true);
+                    }
+                } catch (\Exception $e) {
+                    Log::warning('Failed to load e-stamp image: ' . $e->getMessage());
+                }
+            }
+        }
+
+        if ($settings && $settings->footer_path) {
             $footerImagePath = storage_path('app/public/' . $settings->footer_path);
             if (!file_exists($footerImagePath)) {
                 $footerImagePath = public_path('storage/' . $settings->footer_path);
             }
-
             if (file_exists($footerImagePath)) {
                 try {
                     $imageInfo = @getimagesize($footerImagePath);
                     if ($imageInfo !== false) {
-                        $maxFooterWidth = $pageWidth * 0.9;
+                        $maxFooterWidth = $pageWidth;
                         $aspectRatio = $imageInfo[1] / $imageInfo[0];
                         $footerWidthMM = $maxFooterWidth;
                         $footerHeightMM = $footerWidthMM * $aspectRatio;
 
-                        $currentY = $pdf->GetY();
-                        if ($currentY + $footerHeightMM + $bottomMargin > $pageHeight - $bottomMargin) {
-                            $pdf->AddPage();
-                        }
-
                         $pdf->setRTL(false);
-                        $xPos = ($pageWidth - $footerWidthMM) / 2;
-                        $yPos = $pageHeight - $footerHeightMM - $bottomMargin;
-
-                        $pdf->Image($footerImagePath, $xPos, $yPos, $footerWidthMM, $footerHeightMM, '', '', '', false, 300, '', false, false, 0, false, false, false);
+                        $yPos = $pageHeight - $footerHeightMM;
+                        $pdf->Image($footerImagePath, 0, $yPos, $footerWidthMM, $footerHeightMM, '', '', '', false, 300, '', false, false, 0, false, false, false);
                         $pdf->setRTL(true);
                     }
                 } catch (\Exception $e) {
@@ -1086,6 +1109,9 @@ class ReservationController extends Controller
                 }
             }
         }
+
+        // Re-enable auto page break
+        $pdf->SetAutoPageBreak(true, $bottomMargin);
 
         // Generate PDF and return as response
         $filename = 'invoice_reservation_' . $reservation->id . '_' . date('Y-m-d') . '.pdf';

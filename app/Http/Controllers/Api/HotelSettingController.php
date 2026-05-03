@@ -98,12 +98,29 @@ class HotelSettingController extends Controller
         $settings->fill($data);
         $settings->save();
 
-        // Use asset helper for full URLs
-        $settings->logo_url = $settings->logo_path ? asset('storage/' . $settings->logo_path) : null;
-        $settings->stamp_url = $settings->stamp_path ? asset('storage/' . $settings->stamp_path) : null;
-        $settings->header_url = $settings->header_path ? asset('storage/' . $settings->header_path) : null;
-        $settings->footer_url = $settings->footer_path ? asset('storage/' . $settings->footer_path) : null;
-        $settings->e_stamp_url = $settings->e_stamp_path ? asset('storage/' . $settings->e_stamp_path) : null;
+        return response()->json($settings);
+    }
+
+    public function deleteImage(Request $request)
+    {
+        $request->validate([
+            'type' => ['required', 'string', 'in:logo,stamp,header,footer,e_stamp'],
+        ]);
+
+        $type = $request->type;
+        $settings = HotelSetting::first();
+
+        if (!$settings) {
+            return response()->json(['message' => 'Settings not found'], 404);
+        }
+
+        $pathField = $type . '_path';
+        
+        if ($settings->$pathField) {
+            Storage::disk('public')->delete($settings->$pathField);
+            $settings->$pathField = null;
+            $settings->save();
+        }
 
         return response()->json($settings);
     }

@@ -90,7 +90,7 @@ class AccountingController extends Controller
             $balanceFilter = $request->balance_filter;
             if ($balanceFilter === 'outstanding') {
                 // Only customers with balance > 0
-                $query->whereHas('transactions', function ($q) {
+                $query->whereHas('transactions', function () {
                     // This will be filtered after calculation
                 });
             }
@@ -191,37 +191,54 @@ class AccountingController extends Controller
         $pdf->setRTL(true);
         $pdf->AddPage();
 
-        // Logo from Settings
         $settings = \App\Models\HotelSetting::first();
-        $logoImagePath = null;
-        if ($settings) {
-            $logoPath = $settings->header_path ?? $settings->logo_path;
-            if ($logoPath) {
-                $logoImagePath = storage_path('app/public/' . $logoPath);
-                if (!file_exists($logoImagePath)) {
-                    $logoImagePath = public_path('storage/' . $logoPath);
+
+        if ($settings && $settings->header_path) {
+            $headerImagePath = storage_path('app/public/' . $settings->header_path);
+            if (!file_exists($headerImagePath)) {
+                $headerImagePath = public_path('storage/' . $settings->header_path);
+            }
+            if (file_exists($headerImagePath)) {
+                try {
+                    $imageInfo = @getimagesize($headerImagePath);
+                    if ($imageInfo !== false) {
+                        $headerWidthMM = $pageWidth;
+                        $aspectRatio = $imageInfo[1] / $imageInfo[0];
+                        $headerHeightMM = $headerWidthMM * $aspectRatio;
+
+                        $pdf->setRTL(false);
+                        $pdf->Image($headerImagePath, 0, 0, $headerWidthMM, $headerHeightMM, '', '', '', false, 300, '', false, false, 0, false, false, false);
+                        $pdf->setRTL(true);
+                        $pdf->SetY($headerHeightMM + 5);
+                    }
+                } catch (\Exception $e) {
+                    Log::warning('Failed to load header image: ' . $e->getMessage());
                 }
             }
-        }
+        } elseif ($settings && $settings->logo_path) {
+            $logoImagePath = storage_path('app/public/' . $settings->logo_path);
+            if (!file_exists($logoImagePath)) {
+                $logoImagePath = public_path('storage/' . $settings->logo_path);
+            }
+            if (file_exists($logoImagePath)) {
+                try {
+                    $imageInfo = @getimagesize($logoImagePath);
+                    if ($imageInfo !== false) {
+                        $maxLogoWidth = $pageWidth * 0.15;
+                        $aspectRatio = $imageInfo[1] / $imageInfo[0];
+                        $logoWidthMM = $maxLogoWidth;
+                        $logoHeightMM = $logoWidthMM * $aspectRatio;
 
-        if (file_exists($logoImagePath)) {
-            try {
-                $imageInfo = @getimagesize($logoImagePath);
-                if ($imageInfo !== false) {
-                    $maxLogoWidth = 25; // Smaller logo
-                    $aspectRatio = $imageInfo[1] / $imageInfo[0];
-                    $logoWidthMM = $maxLogoWidth;
-                    $logoHeightMM = $logoWidthMM * $aspectRatio;
-
-                    $pdf->setRTL(false);
-                    $xPos = ($pageWidth - $logoWidthMM) / 2;
-                    $yPos = $topMargin;
-                    $pdf->Image($logoImagePath, $xPos, $yPos, $logoWidthMM, $logoHeightMM, '', '', '', false, 300, '', false, false, 0, false, false, false);
-                    $pdf->setRTL(true);
-                    $pdf->SetY($yPos + $logoHeightMM + 5);
+                        $pdf->setRTL(false);
+                        $xPos = ($pageWidth - $logoWidthMM) / 2;
+                        $yPos = $topMargin;
+                        $pdf->Image($logoImagePath, $xPos, $yPos, $logoWidthMM, $logoHeightMM, '', '', '', false, 300, '', false, false, 0, false, false, false);
+                        $pdf->setRTL(true);
+                        $pdf->SetY($yPos + $logoHeightMM + 5);
+                    }
+                } catch (\Exception $e) {
+                    Log::warning('Failed to load logo image: ' . $e->getMessage());
                 }
-            } catch (\Exception $e) {
-                Log::warning('Failed to load logo image: ' . $e->getMessage());
             }
         }
 
@@ -241,21 +258,15 @@ class AccountingController extends Controller
             $pdf->Ln(3);
         }
 
-        // Summary
-        $pdf->SetFont('arial', 'B', 12);
-        $pdf->Cell(0, 8, 'الملخص المالي', 0, 1, 'R');
-        $pdf->SetFont('arial', '', 10);
+        // Summary (2 columns x 2 rows)
+        $pdf->SetFont('arial', 'B', 10);
+        $pdf->SetFillColor(240, 240, 240);
+        $colW = ($pageWidth - $leftMargin - $rightMargin) / 2; // 90mm each
 
-        $summaryInfo = [
-            'إجمالي الإيرادات: ' . number_format($summary['total_revenue'], 0, '.', ',') . ' ',
-            'إجمالي المصروفات: ' . number_format($summary['total_expenses'], 0, '.', ',') . ' ',
-            'إجمالي المدين: ' . number_format($summary['total_debits'], 0, '.', ',') . ' ',
-            'صافي الربح: ' . number_format($summary['net_profit'], 0, '.', ',') . ' ',
-        ];
-
-        foreach ($summaryInfo as $info) {
-            $pdf->Cell(0, 6, $info, 0, 1, 'R');
-        }
+        $pdf->Cell($colW, 8, 'إجمالي الإيرادات: ' . number_format($summary['total_revenue'], 0, '.', ','), 1, 0, 'R', true);
+        $pdf->Cell($colW, 8, 'إجمالي المصروفات: ' . number_format($summary['total_expenses'], 0, '.', ','), 1, 1, 'R', true);
+        $pdf->Cell($colW, 8, 'إجمالي المدين: ' . number_format($summary['total_debits'], 0, '.', ','), 1, 0, 'R', true);
+        $pdf->Cell($colW, 8, 'صافي الربح: ' . number_format($summary['net_profit'], 0, '.', ','), 1, 1, 'R', true);
 
         $pdf->Ln(5);
 
@@ -304,15 +315,9 @@ class AccountingController extends Controller
             $pdf->setTextColor(0, 0, 0);
         }
 
-        $pdf->Ln(5);
-
-        // Customer Balances (Separate Page)
+        // Customer Balances (continue on same page, auto page break handles overflow)
         if ($customerBalances->count() > 0) {
-            $pdf->AddPage();
-            
-            $pdf->SetFont('arial', 'B', 15);
-            $pdf->Cell(0, 10, 'تقرير أرصدة العملاء', 0, 1, 'C');
-            $pdf->Ln(5);
+            $pdf->Ln(2);
 
             $pdf->SetFont('arial', 'B', 12);
             $pdf->Cell(0, 8, 'أرصدة العملاء', 0, 1, 'R');
@@ -341,44 +346,52 @@ class AccountingController extends Controller
             }
         }
 
-        // Footer
-        if ($settings && $settings->footer_path) {
-            $footerImagePath = storage_path('app/public/' . $settings->footer_path);
-            if (!file_exists($footerImagePath)) {
-                $footerImagePath = public_path('storage/' . $settings->footer_path);
-            }
+        // Add stamp and footer to ALL pages
+        $totalPages = $pdf->getNumPages();
+        $pdf->SetAutoPageBreak(false);
 
-            if (file_exists($footerImagePath)) {
+        $footerImagePath = null;
+        $footerWidthMM = $pageWidth;
+        $footerHeightMM = 0;
+        if ($settings && $settings->footer_path) {
+            $path = storage_path('app/public/' . $settings->footer_path);
+            if (!file_exists($path)) $path = public_path('storage/' . $settings->footer_path);
+            if (file_exists($path)) $footerImagePath = $path;
+        }
+
+        if ($footerImagePath) {
             try {
                 $imageInfo = @getimagesize($footerImagePath);
                 if ($imageInfo !== false) {
-                    $maxFooterWidth = $pageWidth * 0.9;
                     $aspectRatio = $imageInfo[1] / $imageInfo[0];
-                    $footerWidthMM = $maxFooterWidth;
                     $footerHeightMM = $footerWidthMM * $aspectRatio;
-
-                    $currentY = $pdf->GetY();
-                    if ($currentY + $footerHeightMM + $bottomMargin > $pageHeight - $bottomMargin) {
-                        $pdf->AddPage();
-                    }
-
-                    $pdf->setRTL(false);
-                    $xPos = ($pageWidth - $footerWidthMM) / 2;
-                    $yPos = $pageHeight - $footerHeightMM - $bottomMargin;
-                    $pdf->Image($footerImagePath, $xPos, $yPos, $footerWidthMM, $footerHeightMM, '', '', '', false, 300, '', false, false, 0, false, false, false);
-                    $pdf->setRTL(true);
                 }
-            } catch (\Exception $e) {
-                Log::warning('Failed to load footer image: ' . $e->getMessage());
-            }
+            } catch (\Exception $e) {}
         }
-    }
 
-    $filename = 'accounting_report_' . date('Y-m-d') . '.pdf';
-    return response($pdf->Output($filename, 'S'), 200)
-        ->header('Content-Type', 'application/pdf')
-        ->header('Content-Disposition', 'attachment; filename="' . $filename . '"');
-}
+        for ($i = 1; $i <= $totalPages; $i++) {
+            $pdf->setPage($i);
+            $pdf->setRTL(false);
+
+            if ($footerImagePath && $footerHeightMM > 0) {
+                $yPos = $pageHeight - $footerHeightMM;
+                try {
+                    $pdf->Image($footerImagePath, 0, $yPos, $footerWidthMM, $footerHeightMM, '', '', '', false, 300, '', false, false, 0, false, false, false);
+                } catch (\Exception $e) {
+                    Log::warning('Failed to draw footer on page ' . $i . ': ' . $e->getMessage());
+                }
+            }
+
+            $pdf->setRTL(true);
+        }
+
+        $pdf->SetAutoPageBreak(true, $bottomMargin);
+
+        $filename = 'accounting_report_' . date('Y-m-d') . '.pdf';
+        return response($pdf->Output($filename, 'S'), 200)
+            ->header('Content-Type', 'application/pdf')
+            ->header('Content-Disposition', 'attachment; filename="' . $filename . '"');
+    }
 
     /**
      * Export accounting report as Excel
@@ -538,7 +551,6 @@ class AccountingController extends Controller
         // Add a page
         $pdf->AddPage();
 
-        $pageWidth = 210;
         // Title
         $pdf->SetFont('arial', 'B', 16);
         $pdf->Cell(0, 10, 'تقرير تفصيل الصافي حسب طريقة الدفع', 0, 1, 'C');
@@ -933,113 +945,167 @@ class AccountingController extends Controller
             $dayData['net'] = $dayData['revenue_total'] - $dayData['expense_total'];
         }
 
-        $pdf = new \TCPDF('L', 'mm', 'A4', true, 'UTF-8', false);
+        $pageWidth  = 210; // portrait A4
+        $pageHeight = 297;
+        $margin     = 10;
+
+        $pdf = new \TCPDF('P', 'mm', 'A4', true, 'UTF-8', false);
         $pdf->SetCreator('Hotel Management System');
         $pdf->SetTitle('التقرير الشهري للإيرادات والمصروفات');
         $pdf->setPrintHeader(false);
         $pdf->setPrintFooter(false);
-        $pdf->SetMargins(10, 10, 10);
-        $pdf->SetAutoPageBreak(true, 10);
+        $pdf->SetMargins($margin, $margin, $margin);
+        $pdf->SetAutoPageBreak(true, $margin);
         $pdf->setRTL(true);
         $pdf->AddPage();
 
-        // Logo from Settings
         $settings = \App\Models\HotelSetting::first();
-        $logoImagePath = null;
-        if ($settings) {
-            $logoPath = $settings->header_path ?? $settings->logo_path;
-            if ($logoPath) {
-                $logoImagePath = storage_path('app/public/' . $logoPath);
-                if (!file_exists($logoImagePath)) {
-                    $logoImagePath = public_path('storage/' . $logoPath);
+
+        if ($settings && $settings->header_path) {
+            $headerImagePath = storage_path('app/public/' . $settings->header_path);
+            if (!file_exists($headerImagePath)) {
+                $headerImagePath = public_path('storage/' . $settings->header_path);
+            }
+            if (file_exists($headerImagePath)) {
+                try {
+                    $imageInfo = @getimagesize($headerImagePath);
+                    if ($imageInfo !== false) {
+                        $headerWidthMM  = $pageWidth;
+                        $aspectRatio    = $imageInfo[1] / $imageInfo[0];
+                        $headerHeightMM = $headerWidthMM * $aspectRatio;
+
+                        $pdf->setRTL(false);
+                        $pdf->Image($headerImagePath, 0, 0, $headerWidthMM, $headerHeightMM, '', '', '', false, 300, '', false, false, 0, false, false, false);
+                        $pdf->setRTL(true);
+                        $pdf->SetY($headerHeightMM + 3);
+                    }
+                } catch (\Exception $e) {
+                    Log::warning('Failed to load header image: ' . $e->getMessage());
+                }
+            }
+        } elseif ($settings && $settings->logo_path) {
+            $logoImagePath = storage_path('app/public/' . $settings->logo_path);
+            if (!file_exists($logoImagePath)) {
+                $logoImagePath = public_path('storage/' . $settings->logo_path);
+            }
+            if (file_exists($logoImagePath)) {
+                try {
+                    $imageInfo = @getimagesize($logoImagePath);
+                    if ($imageInfo !== false) {
+                        $logoWidthMM  = $pageWidth * 0.10;
+                        $aspectRatio  = $imageInfo[1] / $imageInfo[0];
+                        $logoHeightMM = $logoWidthMM * $aspectRatio;
+
+                        $pdf->setRTL(false);
+                        $xPos = ($pageWidth - $logoWidthMM) / 2;
+                        $pdf->Image($logoImagePath, $xPos, $margin, $logoWidthMM, $logoHeightMM, '', '', '', false, 300, '', false, false, 0, false, false, false);
+                        $pdf->setRTL(true);
+                        $pdf->SetY($margin + $logoHeightMM + 3);
+                    }
+                } catch (\Exception $e) {
+                    Log::warning('Failed to load logo image: ' . $e->getMessage());
                 }
             }
         }
 
-        if (file_exists($logoImagePath)) {
-            try {
-                $imageInfo = @getimagesize($logoImagePath);
-                if ($imageInfo !== false) {
-                    $maxLogoWidth = 20; // Even smaller logo for landscape
-                    $aspectRatio = $imageInfo[1] / $imageInfo[0];
-                    $logoWidthMM = $maxLogoWidth;
-                    $logoHeightMM = $logoWidthMM * $aspectRatio;
-
-                    $pdf->setRTL(false);
-                    // Place it on the right side since it's landscape RTL
-                    $xPos = 297 - 10 - $logoWidthMM;
-                    $yPos = 10;
-                    $pdf->Image($logoImagePath, $xPos, $yPos, $logoWidthMM, $logoHeightMM, '', '', '', false, 300, '', false, false, 0, false, false, false);
-                    $pdf->setRTL(true);
-                }
-            } catch (\Exception $e) {
-                Log::warning('Failed to load logo image: ' . $e->getMessage());
-            }
-        }
-
-        $pdf->SetFont('freeserif', 'B', 18);
+        $pdf->SetFont('arial', 'B', 16);
         $months = ["يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو", "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر"];
         $monthName = $months[$month - 1];
-        $pdf->Cell(0, 15, "تقرير الإيرادات والمصروفات لشهر $monthName $year", 0, 1, 'C');
-        $pdf->Ln(5);
+        $pdf->Cell(0, 12, "تقرير الإيرادات والمصروفات لشهر $monthName $year", 0, 1, 'C');
+        $pdf->Ln(3);
 
-        $pdf->SetFont('freeserif', 'B', 10);
+        // Column widths totalling 190mm (210 - 10*2 margins)
+        $c = [20, 21, 18, 18, 18, 18, 21, 18, 18, 20]; // التاريخ، إجمالي الإيراد، نقدي، بنك، خدمات، استرجاع، إجمالي الصرف، نقدي، بنك، الصافي
+
+        $pdf->SetFont('arial', 'B', 8);
         $pdf->SetFillColor(230, 230, 230);
-        $pdf->Cell(22, 10, 'التاريخ', 1, 0, 'C', true);
-        $pdf->Cell(28, 10, 'إجمالي الإيراد', 1, 0, 'C', true);
-        $pdf->Cell(25, 10, 'نقدي', 1, 0, 'C', true);
-        $pdf->Cell(25, 10, 'بنك', 1, 0, 'C', true);
-        $pdf->Cell(25, 10, 'خدمات', 1, 0, 'C', true);
-        $pdf->Cell(25, 10, 'استرجاع', 1, 0, 'C', true);
-        $pdf->Cell(30, 10, 'إجمالي الصرف', 1, 0, 'C', true);
-        $pdf->Cell(25, 10, 'نقدي', 1, 0, 'C', true);
-        $pdf->Cell(25, 10, 'بنك', 1, 0, 'C', true);
-        $pdf->Cell(25, 10, 'الصافي', 1, 1, 'C', true);
+        $pdf->Cell($c[0], 9, 'التاريخ',       1, 0, 'C', true);
+        $pdf->Cell($c[1], 9, 'إجمالي الإيراد',1, 0, 'C', true);
+        $pdf->Cell($c[2], 9, 'نقدي',           1, 0, 'C', true);
+        $pdf->Cell($c[3], 9, 'بنك',            1, 0, 'C', true);
+        $pdf->Cell($c[4], 9, 'خدمات',          1, 0, 'C', true);
+        $pdf->Cell($c[5], 9, 'استرجاع',        1, 0, 'C', true);
+        $pdf->Cell($c[6], 9, 'إجمالي الصرف',  1, 0, 'C', true);
+        $pdf->Cell($c[7], 9, 'نقدي',           1, 0, 'C', true);
+        $pdf->Cell($c[8], 9, 'بنك',            1, 0, 'C', true);
+        $pdf->Cell($c[9], 9, 'الصافي',         1, 1, 'C', true);
 
-        $pdf->SetFont('freeserif', '', 10);
+        $pdf->SetFont('arial', '', 8);
         $totals = ['rev' => 0, 'rev_c' => 0, 'rev_b' => 0, 'srv' => 0, 'ref' => 0, 'exp' => 0, 'exp_c' => 0, 'exp_b' => 0, 'net' => 0];
         foreach ($report as $day) {
-            $pdf->Cell(22, 8, date('d-m-Y', strtotime($day['date'])), 1, 0, 'C');
-            $pdf->Cell(28, 8, number_format($day['revenue_total'], 0, '.', ','), 1, 0, 'C');
-            $pdf->Cell(25, 8, number_format($day['revenue_cash'], 0, '.', ','), 1, 0, 'C');
-            $pdf->Cell(25, 8, number_format($day['revenue_bank'], 0, '.', ','), 1, 0, 'C');
-            $pdf->Cell(25, 8, number_format($day['service_revenue'], 0, '.', ','), 1, 0, 'C');
-            $pdf->Cell(25, 8, number_format($day['refund_total'], 0, '.', ','), 1, 0, 'C');
-            $pdf->Cell(30, 8, number_format($day['expense_total'], 0, '.', ','), 1, 0, 'C');
-            $pdf->Cell(25, 8, number_format($day['expense_cash'], 0, '.', ','), 1, 0, 'C');
-            $pdf->Cell(25, 8, number_format($day['expense_bank'], 0, '.', ','), 1, 0, 'C');
+            $pdf->Cell($c[0], 7, date('d-m-Y', strtotime($day['date'])), 1, 0, 'C');
+            $pdf->Cell($c[1], 7, number_format($day['revenue_total'],   0, '.', ','), 1, 0, 'C');
+            $pdf->Cell($c[2], 7, number_format($day['revenue_cash'],    0, '.', ','), 1, 0, 'C');
+            $pdf->Cell($c[3], 7, number_format($day['revenue_bank'],    0, '.', ','), 1, 0, 'C');
+            $pdf->Cell($c[4], 7, number_format($day['service_revenue'], 0, '.', ','), 1, 0, 'C');
+            $pdf->Cell($c[5], 7, number_format($day['refund_total'],    0, '.', ','), 1, 0, 'C');
+            $pdf->Cell($c[6], 7, number_format($day['expense_total'],   0, '.', ','), 1, 0, 'C');
+            $pdf->Cell($c[7], 7, number_format($day['expense_cash'],    0, '.', ','), 1, 0, 'C');
+            $pdf->Cell($c[8], 7, number_format($day['expense_bank'],    0, '.', ','), 1, 0, 'C');
             $pdf->SetTextColor($day['net'] >= 0 ? 0 : 200, $day['net'] >= 0 ? 100 : 0, 0);
-            $pdf->Cell(25, 8, number_format($day['net'], 0, '.', ','), 1, 1, 'C');
+            $pdf->Cell($c[9], 7, number_format($day['net'],             0, '.', ','), 1, 1, 'C');
             $pdf->SetTextColor(0, 0, 0);
 
-            $totals['rev'] += $day['revenue_total'];
+            $totals['rev']   += $day['revenue_total'];
             $totals['rev_c'] += $day['revenue_cash'];
             $totals['rev_b'] += $day['revenue_bank'];
-            $totals['srv'] += $day['service_revenue'];
-            $totals['ref'] += $day['refund_total'];
-            $totals['exp'] += $day['expense_total'];
+            $totals['srv']   += $day['service_revenue'];
+            $totals['ref']   += $day['refund_total'];
+            $totals['exp']   += $day['expense_total'];
             $totals['exp_c'] += $day['expense_cash'];
             $totals['exp_b'] += $day['expense_bank'];
-            $totals['net'] += $day['net'];
+            $totals['net']   += $day['net'];
         }
-        $pdf->SetFont('freeserif', 'B', 10);
+        $pdf->SetFont('arial', 'B', 8);
         $pdf->SetFillColor(230, 230, 230);
-        $pdf->Cell(22, 10, 'الإجمالي', 1, 0, 'C', true);
-        $pdf->Cell(28, 10, number_format($totals['rev'], 0, '.', ','), 1, 0, 'C', true);
-        $pdf->Cell(25, 10, number_format($totals['rev_c'], 0, '.', ','), 1, 0, 'C', true);
-        $pdf->Cell(25, 10, number_format($totals['rev_b'], 0, '.', ','), 1, 0, 'C', true);
-        $pdf->Cell(25, 10, number_format($totals['srv'], 0, '.', ','), 1, 0, 'C', true);
-        $pdf->Cell(25, 10, number_format($totals['ref'], 0, '.', ','), 1, 0, 'C', true);
-        $pdf->Cell(30, 10, number_format($totals['exp'], 0, '.', ','), 1, 0, 'C', true);
-        $pdf->Cell(25, 10, number_format($totals['exp_c'], 0, '.', ','), 1, 0, 'C', true);
-        $pdf->Cell(25, 10, number_format($totals['exp_b'], 0, '.', ','), 1, 0, 'C', true);
-        $pdf->Cell(25, 10, number_format($totals['net'], 0, '.', ','), 1, 1, 'C', true);
+        $pdf->Cell($c[0], 9, 'الإجمالي',                                              1, 0, 'C', true);
+        $pdf->Cell($c[1], 9, number_format($totals['rev'],   0, '.', ','), 1, 0, 'C', true);
+        $pdf->Cell($c[2], 9, number_format($totals['rev_c'], 0, '.', ','), 1, 0, 'C', true);
+        $pdf->Cell($c[3], 9, number_format($totals['rev_b'], 0, '.', ','), 1, 0, 'C', true);
+        $pdf->Cell($c[4], 9, number_format($totals['srv'],   0, '.', ','), 1, 0, 'C', true);
+        $pdf->Cell($c[5], 9, number_format($totals['ref'],   0, '.', ','), 1, 0, 'C', true);
+        $pdf->Cell($c[6], 9, number_format($totals['exp'],   0, '.', ','), 1, 0, 'C', true);
+        $pdf->Cell($c[7], 9, number_format($totals['exp_c'], 0, '.', ','), 1, 0, 'C', true);
+        $pdf->Cell($c[8], 9, number_format($totals['exp_b'], 0, '.', ','), 1, 0, 'C', true);
+        $pdf->Cell($c[9], 9, number_format($totals['net'],   0, '.', ','), 1, 1, 'C', true);
         $pdf->Ln(5);
+
+        // Add footer to all pages
+        $footerImagePath = null;
+        $footerHeightMM  = 0;
+        if ($settings && $settings->footer_path) {
+            $path = storage_path('app/public/' . $settings->footer_path);
+            if (!file_exists($path)) $path = public_path('storage/' . $settings->footer_path);
+            if (file_exists($path)) {
+                try {
+                    $imageInfo = @getimagesize($path);
+                    if ($imageInfo !== false) {
+                        $footerImagePath = $path;
+                        $aspectRatio     = $imageInfo[1] / $imageInfo[0];
+                        $footerHeightMM  = $pageWidth * $aspectRatio;
+                    }
+                } catch (\Exception $e) {}
+            }
+        }
+
+        if ($footerImagePath && $footerHeightMM > 0) {
+            $totalPages = $pdf->getNumPages();
+            $pdf->SetAutoPageBreak(false);
+            $pdf->setPage($totalPages);
+            $pdf->setRTL(false);
+            try {
+                $pdf->Image($footerImagePath, 0, $pageHeight - $footerHeightMM, $pageWidth, $footerHeightMM, '', '', '', false, 300, '', false, false, 0, false, false, false);
+            } catch (\Exception $e) {
+                Log::warning('Failed to draw footer: ' . $e->getMessage());
+            }
+            $pdf->setRTL(true);
+            $pdf->SetAutoPageBreak(true, $margin);
+        }
 
         $filename = "monthly_report_{$year}_{$month}.pdf";
         if (ob_get_length()) ob_clean();
         $content = $pdf->Output('', 'S');
-        
+
         return response()->make($content, 200, [
             'Content-Type' => 'application/pdf',
             'Content-Disposition' => 'attachment; filename="' . $filename . '"',
