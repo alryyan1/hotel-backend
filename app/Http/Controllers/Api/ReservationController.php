@@ -65,7 +65,9 @@ class ReservationController extends Controller
 
         // Filter by reservation creation date (created_at) if provided
         if ($request->has('created_at_date') && !empty($request->created_at_date)) {
-            $query->whereDate('created_at', $request->created_at_date);
+            $start = \Carbon\Carbon::parse($request->created_at_date)->setTime(12, 0, 0);
+            $end   = \Carbon\Carbon::parse($request->created_at_date)->addDay()->setTime(11, 59, 59);
+            $query->whereBetween('created_at', [$start, $end]);
         }
 
         // Date range filter based on check-in / check-out dates
@@ -171,37 +173,37 @@ class ReservationController extends Controller
 
         $reservation->rooms()->sync($syncData);
 
-        // Create a debit transaction for this reservation
+        // Create one debit transaction per room
         $reservation->load(['rooms.type']);
         $roomTypes = RoomType::all()->keyBy('id');
 
         $checkIn = new \DateTime($reservation->check_in_date);
         $checkOut = new \DateTime($reservation->check_out_date);
-        $interval = $checkIn->diff($checkOut);
-        $days = max(1, $interval->days);
+        $days = max(1, $checkIn->diff($checkOut)->days);
 
         $totalDebit = 0;
         foreach ($reservation->rooms as $room) {
-            // Get base price: first try room->type->base_price, then fallback to roomTypes lookup
-            // If a specific rate is provided on the pivot, use it; otherwise use room type base_price
             $basePrice = $room->pivot->rate ?? (
                 ($room->type && $room->type->base_price)
                 ? $room->type->base_price
                 : ($roomTypes[$room->room_type_id]->base_price ?? 0)
             );
-            $totalDebit += $days * $basePrice;
+            $roomAmount = $days * $basePrice;
+            $totalDebit += $roomAmount;
+
+            Transaction::create([
+                'customer_id'      => $reservation->customer_id,
+                'reservation_id'   => $reservation->id,
+                'type'             => 'debit',
+                'amount'           => $roomAmount,
+                'currency'         => 'SDG',
+                'transaction_date' => $reservation->check_in_date,
+                'reference'        => 'RES-' . $reservation->id . '-ROOM-' . $room->id,
+                'notes'            => 'غرفة ' . $room->number,
+            ]);
         }
 
-        // Always create a transaction, even if amount is 0 (for consistency)
-        Transaction::create([
-            'customer_id' => $reservation->customer_id,
-            'reservation_id' => $reservation->id,
-            'type' => 'debit',
-            'amount' => $totalDebit,
-            'currency' => 'SDG',
-            'transaction_date' => $reservation->check_in_date,
-            'reference' => 'RES-' . $reservation->id,
-        ]);
+        $reservation->update(['total_amount' => $totalDebit]);
 
         // SMS service disabled
         $smsResult = ['success' => false, 'error' => 'SMS service disabled'];
@@ -374,19 +376,27 @@ class ReservationController extends Controller
             return response()->json(['message' => 'Reservation must be checked in to check out'], 422);
         }
 
-        $today = now()->toDateString();
+        $now   = now(); // Africa/Khartoum
+        $today = $now->toDateString();
+
+        // After noon: today's hotel day is already running → charge today, refund starts tomorrow
+        // Before noon: today's hotel day hasn't started → refund starts today
+        $effectiveCheckoutDate = $now->hour >= 12
+            ? $now->copy()->addDay()->toDateString()
+            : $today;
+
         $scheduledCheckOut = $reservation->check_out_date instanceof \Carbon\Carbon
             ? $reservation->check_out_date->toDateString()
             : substr($reservation->check_out_date, 0, 10);
 
-        $isEarlyCheckout = $today < $scheduledCheckOut;
-        $refundAmount = 0;
-        $remainingDays = 0;
+        $isEarlyCheckout = $effectiveCheckoutDate < $scheduledCheckOut;
+        $refundAmount    = 0;
+        $remainingDays   = 0;
 
         if ($isEarlyCheckout) {
-            $todayDate = new \DateTime($today);
+            $effectiveDate = new \DateTime($effectiveCheckoutDate);
             $scheduledDate = new \DateTime($scheduledCheckOut);
-            $remainingDays = $todayDate->diff($scheduledDate)->days;
+            $remainingDays = $effectiveDate->diff($scheduledDate)->days;
 
             $reservation->load(['rooms.type']);
             foreach ($reservation->rooms as $room) {
@@ -527,6 +537,87 @@ class ReservationController extends Controller
         });
 
         return response()->json($reservation->fresh()->load(['customer', 'rooms', 'transactions']));
+    }
+
+    public function updateDates(Request $request, Reservation $reservation)
+    {
+        $data = $request->validate([
+            'check_in_date'  => ['sometimes', 'date'],
+            'check_out_date' => ['sometimes', 'date'],
+        ]);
+
+        if (empty($data)) {
+            return response()->json(['message' => 'لم يتم تحديد تواريخ للتعديل'], 422);
+        }
+
+        $finalCheckIn  = $data['check_in_date']  ?? (
+            $reservation->check_in_date instanceof \Carbon\Carbon
+                ? $reservation->check_in_date->toDateString()
+                : substr($reservation->check_in_date, 0, 10)
+        );
+        $finalCheckOut = $data['check_out_date'] ?? (
+            $reservation->check_out_date instanceof \Carbon\Carbon
+                ? $reservation->check_out_date->toDateString()
+                : substr($reservation->check_out_date, 0, 10)
+        );
+
+        if ($finalCheckOut <= $finalCheckIn) {
+            return response()->json(['message' => 'يجب أن يكون تاريخ المغادرة بعد تاريخ الوصول'], 422);
+        }
+
+        $newDays = (new \DateTime($finalCheckIn))->diff(new \DateTime($finalCheckOut))->days;
+        $newDays = max(1, $newDays);
+
+        $reservation->load(['rooms.type']);
+        $pricePerDay = 0;
+        foreach ($reservation->rooms as $room) {
+            $rate = $room->pivot->rate ?? ($room->type->base_price ?? 0);
+            $pricePerDay += (float) $rate;
+        }
+        $newTotal = $newDays * $pricePerDay;
+
+        DB::transaction(function () use ($reservation, $finalCheckIn, $finalCheckOut, $newTotal, $newDays) {
+            $reservation->check_in_date  = $finalCheckIn;
+            $reservation->check_out_date = $finalCheckOut;
+            $reservation->total_amount   = $newTotal;
+            $reservation->save();
+
+            foreach ($reservation->rooms as $room) {
+                $reservation->rooms()->updateExistingPivot($room->id, [
+                    'check_in_date'  => $finalCheckIn,
+                    'check_out_date' => $finalCheckOut,
+                ]);
+            }
+
+            // Update debit transactions — per-room format (new) or single format (legacy)
+            $debitTransactions = Transaction::where('reservation_id', $reservation->id)
+                ->where('type', 'debit')
+                ->get();
+
+            $isPerRoom = $debitTransactions->contains(fn($t) => str_contains($t->reference ?? '', '-ROOM-'));
+
+            if ($isPerRoom) {
+                foreach ($reservation->rooms as $room) {
+                    $rate      = $room->pivot->rate ?? ($room->type->base_price ?? 0);
+                    $roomTotal = $newDays * (float) $rate;
+                    $t = $debitTransactions->first(fn($t) => $t->reference === 'RES-' . $reservation->id . '-ROOM-' . $room->id);
+                    if ($t) {
+                        $t->update(['amount' => $roomTotal, 'transaction_date' => $finalCheckIn]);
+                    }
+                }
+            } else {
+                $single = $debitTransactions->first();
+                if ($single) {
+                    $single->update([
+                        'amount'           => $newTotal,
+                        'transaction_date' => $finalCheckIn,
+                        'notes'            => "وصول {$finalCheckIn} - مغادرة {$finalCheckOut}",
+                    ]);
+                }
+            }
+        });
+
+        return response()->json($reservation->fresh()->load(['customer', 'rooms.type', 'transactions']));
     }
 
     /**
@@ -1030,27 +1121,38 @@ class ReservationController extends Controller
             $pdf->Cell(0, 6, $info, 0, 1, 'R');
         }
 
-        // Disable auto page break before stamps and footer
         $pdf->SetAutoPageBreak(false);
 
-        if ($settings && $settings->stamp_path) {
-            $stampImagePath = storage_path('app/public/' . $settings->stamp_path);
-            if (!file_exists($stampImagePath)) {
-                $stampImagePath = public_path('storage/' . $settings->stamp_path);
+        // Pre-calculate footer height so stamps can be anchored just above it
+        $footerHeightMM  = 0;
+        $footerImagePath = null;
+        if ($settings && $settings->footer_path) {
+            $fPath = storage_path('app/public/' . $settings->footer_path);
+            if (!file_exists($fPath)) $fPath = public_path('storage/' . $settings->footer_path);
+            if (file_exists($fPath)) {
+                $fInfo = @getimagesize($fPath);
+                if ($fInfo) {
+                    $footerHeightMM  = $pageWidth * ($fInfo[1] / $fInfo[0]);
+                    $footerImagePath = $fPath;
+                }
             }
-            if (file_exists($stampImagePath)) {
-                try {
-                    $imageInfo = @getimagesize($stampImagePath);
-                    if ($imageInfo !== false) {
-                        $stampWidthMM = 40;
-                        $aspectRatio = $imageInfo[1] / $imageInfo[0];
-                        $stampHeightMM = $stampWidthMM * $aspectRatio;
+        }
 
-                        $currentY = $pdf->GetY();
+        $stampWidthMM = 40;
+        $stampXPos    = $leftMargin;
+        $eStampXPos   = $leftMargin + $stampWidthMM + 5;
+
+        if ($settings && $settings->stamp_path) {
+            $sPath = storage_path('app/public/' . $settings->stamp_path);
+            if (!file_exists($sPath)) $sPath = public_path('storage/' . $settings->stamp_path);
+            if (file_exists($sPath)) {
+                try {
+                    $imgInfo = @getimagesize($sPath);
+                    if ($imgInfo) {
+                        $stampHeightMM = $stampWidthMM * ($imgInfo[1] / $imgInfo[0]);
+                        $yPos = $pageHeight - $footerHeightMM - $stampHeightMM - 5;
                         $pdf->setRTL(false);
-                        $xPos = $leftMargin;
-                        $pdf->Image($stampImagePath, $xPos, $currentY + 5, $stampWidthMM, $stampHeightMM, '', '', '', false, 300, '', false, false, 0, false, false, false);
-                        $pdf->SetY($currentY + $stampHeightMM + 10);
+                        $pdf->Image($sPath, $stampXPos, $yPos, $stampWidthMM, $stampHeightMM, '', '', '', false, 300, '', false, false, 0, false, false, false);
                         $pdf->setRTL(true);
                     }
                 } catch (\Exception $e) {
@@ -1060,23 +1162,16 @@ class ReservationController extends Controller
         }
 
         if ($settings && $settings->e_stamp_path) {
-            $eStampImagePath = storage_path('app/public/' . $settings->e_stamp_path);
-            if (!file_exists($eStampImagePath)) {
-                $eStampImagePath = public_path('storage/' . $settings->e_stamp_path);
-            }
-            if (file_exists($eStampImagePath)) {
+            $ePath = storage_path('app/public/' . $settings->e_stamp_path);
+            if (!file_exists($ePath)) $ePath = public_path('storage/' . $settings->e_stamp_path);
+            if (file_exists($ePath)) {
                 try {
-                    $imageInfo = @getimagesize($eStampImagePath);
-                    if ($imageInfo !== false) {
-                        $stampWidthMM = 40;
-                        $aspectRatio = $imageInfo[1] / $imageInfo[0];
-                        $stampHeightMM = $stampWidthMM * $aspectRatio;
-
-                        $currentY = $pdf->GetY();
+                    $imgInfo = @getimagesize($ePath);
+                    if ($imgInfo) {
+                        $eStampHeightMM = $stampWidthMM * ($imgInfo[1] / $imgInfo[0]);
+                        $yPos = $pageHeight - $footerHeightMM - $eStampHeightMM - 5;
                         $pdf->setRTL(false);
-                        $xPos = $leftMargin;
-                        $pdf->Image($eStampImagePath, $xPos, $currentY, $stampWidthMM, $stampHeightMM, '', '', '', false, 300, '', false, false, 0, false, false, false);
-                        $pdf->SetY($currentY + $stampHeightMM + 5);
+                        $pdf->Image($ePath, $eStampXPos, $yPos, $stampWidthMM, $eStampHeightMM, '', '', '', false, 300, '', false, false, 0, false, false, false);
                         $pdf->setRTL(true);
                     }
                 } catch (\Exception $e) {
@@ -1085,28 +1180,13 @@ class ReservationController extends Controller
             }
         }
 
-        if ($settings && $settings->footer_path) {
-            $footerImagePath = storage_path('app/public/' . $settings->footer_path);
-            if (!file_exists($footerImagePath)) {
-                $footerImagePath = public_path('storage/' . $settings->footer_path);
-            }
-            if (file_exists($footerImagePath)) {
-                try {
-                    $imageInfo = @getimagesize($footerImagePath);
-                    if ($imageInfo !== false) {
-                        $maxFooterWidth = $pageWidth;
-                        $aspectRatio = $imageInfo[1] / $imageInfo[0];
-                        $footerWidthMM = $maxFooterWidth;
-                        $footerHeightMM = $footerWidthMM * $aspectRatio;
-
-                        $pdf->setRTL(false);
-                        $yPos = $pageHeight - $footerHeightMM;
-                        $pdf->Image($footerImagePath, 0, $yPos, $footerWidthMM, $footerHeightMM, '', '', '', false, 300, '', false, false, 0, false, false, false);
-                        $pdf->setRTL(true);
-                    }
-                } catch (\Exception $e) {
-                    Log::warning('Failed to load footer image: ' . $e->getMessage());
-                }
+        if ($footerImagePath) {
+            try {
+                $pdf->setRTL(false);
+                $pdf->Image($footerImagePath, 0, $pageHeight - $footerHeightMM - 4, $pageWidth, $footerHeightMM, '', '', '', false, 300, '', false, false, 0, false, false, false);
+                $pdf->setRTL(true);
+            } catch (\Exception $e) {
+                Log::warning('Failed to load footer image: ' . $e->getMessage());
             }
         }
 

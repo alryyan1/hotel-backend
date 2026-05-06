@@ -345,27 +345,38 @@ class TransactionController extends Controller
 
         $pdf->Ln(25);
 
-        // Disable auto page break before stamps and footer
         $pdf->SetAutoPageBreak(false);
 
-        if ($settings && $settings->stamp_path) {
-            $stampImagePath = storage_path('app/public/' . $settings->stamp_path);
-            if (!file_exists($stampImagePath)) {
-                $stampImagePath = public_path('storage/' . $settings->stamp_path);
+        // Pre-calculate footer height so stamps can be anchored just above it
+        $footerHeightMM  = 0;
+        $footerImagePath = null;
+        if ($settings && $settings->footer_path) {
+            $fPath = storage_path('app/public/' . $settings->footer_path);
+            if (!file_exists($fPath)) $fPath = public_path('storage/' . $settings->footer_path);
+            if (file_exists($fPath)) {
+                $fInfo = @getimagesize($fPath);
+                if ($fInfo) {
+                    $footerHeightMM  = $pageWidth * ($fInfo[1] / $fInfo[0]);
+                    $footerImagePath = $fPath;
+                }
             }
-            if (file_exists($stampImagePath)) {
-                try {
-                    $imageInfo = @getimagesize($stampImagePath);
-                    if ($imageInfo !== false) {
-                        $stampWidthMM = 40;
-                        $aspectRatio = $imageInfo[1] / $imageInfo[0];
-                        $stampHeightMM = $stampWidthMM * $aspectRatio;
+        }
 
-                        $currentY = $pdf->GetY();
+        $stampWidthMM = 40;
+        $stampXPos    = $leftMargin;
+        $eStampXPos   = $leftMargin + $stampWidthMM + 5;
+
+        if ($settings && $settings->stamp_path) {
+            $sPath = storage_path('app/public/' . $settings->stamp_path);
+            if (!file_exists($sPath)) $sPath = public_path('storage/' . $settings->stamp_path);
+            if (file_exists($sPath)) {
+                try {
+                    $imgInfo = @getimagesize($sPath);
+                    if ($imgInfo) {
+                        $stampHeightMM = $stampWidthMM * ($imgInfo[1] / $imgInfo[0]);
+                        $yPos = $pageHeight - $footerHeightMM - $stampHeightMM - 5;
                         $pdf->setRTL(false);
-                        $xPos = $leftMargin;
-                        $pdf->Image($stampImagePath, $xPos, $currentY, $stampWidthMM, $stampHeightMM, '', '', '', false, 300, '', false, false, 0, false, false, false);
-                        $pdf->SetY($currentY + $stampHeightMM + 10);
+                        $pdf->Image($sPath, $stampXPos, $yPos, $stampWidthMM, $stampHeightMM, '', '', '', false, 300, '', false, false, 0, false, false, false);
                         $pdf->setRTL(true);
                     }
                 } catch (\Exception $e) {
@@ -375,23 +386,16 @@ class TransactionController extends Controller
         }
 
         if ($settings && $settings->e_stamp_path) {
-            $eStampImagePath = storage_path('app/public/' . $settings->e_stamp_path);
-            if (!file_exists($eStampImagePath)) {
-                $eStampImagePath = public_path('storage/' . $settings->e_stamp_path);
-            }
-            if (file_exists($eStampImagePath)) {
+            $ePath = storage_path('app/public/' . $settings->e_stamp_path);
+            if (!file_exists($ePath)) $ePath = public_path('storage/' . $settings->e_stamp_path);
+            if (file_exists($ePath)) {
                 try {
-                    $imageInfo = @getimagesize($eStampImagePath);
-                    if ($imageInfo !== false) {
-                        $stampWidthMM = 40;
-                        $aspectRatio = $imageInfo[1] / $imageInfo[0];
-                        $stampHeightMM = $stampWidthMM * $aspectRatio;
-
-                        $currentY = $pdf->GetY();
+                    $imgInfo = @getimagesize($ePath);
+                    if ($imgInfo) {
+                        $eStampHeightMM = $stampWidthMM * ($imgInfo[1] / $imgInfo[0]);
+                        $yPos = $pageHeight - $footerHeightMM - $eStampHeightMM - 5;
                         $pdf->setRTL(false);
-                        $xPos = $leftMargin;
-                        $pdf->Image($eStampImagePath, $xPos, $currentY, $stampWidthMM, $stampHeightMM, '', '', '', false, 300, '', false, false, 0, false, false, false);
-                        $pdf->SetY($currentY + $stampHeightMM + 5);
+                        $pdf->Image($ePath, $eStampXPos, $yPos, $stampWidthMM, $eStampHeightMM, '', '', '', false, 300, '', false, false, 0, false, false, false);
                         $pdf->setRTL(true);
                     }
                 } catch (\Exception $e) {
@@ -400,28 +404,13 @@ class TransactionController extends Controller
             }
         }
 
-        if ($settings && $settings->footer_path) {
-            $footerImagePath = storage_path('app/public/' . $settings->footer_path);
-            if (!file_exists($footerImagePath)) {
-                $footerImagePath = public_path('storage/' . $settings->footer_path);
-            }
-            if (file_exists($footerImagePath)) {
-                try {
-                    $imageInfo = @getimagesize($footerImagePath);
-                    if ($imageInfo !== false) {
-                        $maxFooterWidth = $pageWidth;
-                        $aspectRatio = $imageInfo[1] / $imageInfo[0];
-                        $footerWidthMM = $maxFooterWidth;
-                        $footerHeightMM = $footerWidthMM * $aspectRatio;
-
-                        $pdf->setRTL(false);
-                        $yPos = $pageHeight - $footerHeightMM;
-                        $pdf->Image($footerImagePath, 0, $yPos, $footerWidthMM, $footerHeightMM, '', '', '', false, 300, '', false, false, 0, false, false, false);
-                        $pdf->setRTL(true);
-                    }
-                } catch (\Exception $e) {
-                    Log::warning('Failed to load footer image: ' . $e->getMessage());
-                }
+        if ($footerImagePath) {
+            try {
+                $pdf->setRTL(false);
+                $pdf->Image($footerImagePath, 0, $pageHeight - $footerHeightMM - 4, $pageWidth, $footerHeightMM, '', '', '', false, 300, '', false, false, 0, false, false, false);
+                $pdf->setRTL(true);
+            } catch (\Exception $e) {
+                Log::warning('Failed to load footer image: ' . $e->getMessage());
             }
         }
 

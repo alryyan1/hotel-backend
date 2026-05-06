@@ -445,26 +445,36 @@ class CustomerController extends Controller
         $pdf->SetFont('arial', 'B', 12);
         $pdf->Cell(0, 8, 'الرصيد النهائي: ' . number_format($finalBalance, 0, '.', ','), 0, 1, 'R');
 
-        // Disable auto page break temporarily to draw stamps and footer on the same page
         $pdf->SetAutoPageBreak(false);
 
+        // Pre-calculate footer height so stamps can be anchored just above it
+        $footerHeightMM  = 0;
+        $footerImagePath = null;
+        if ($settings && $settings->footer_path) {
+            $fPath = storage_path('app/public/' . $settings->footer_path);
+            if (file_exists($fPath)) {
+                $fInfo = @getimagesize($fPath);
+                if ($fInfo) {
+                    $footerHeightMM  = $pageWidth * ($fInfo[1] / $fInfo[0]);
+                    $footerImagePath = $fPath;
+                }
+            }
+        }
+
+        $stampWidthMM = 40;
+        $stampXPos    = $leftMargin;
+        $eStampXPos   = $leftMargin + $stampWidthMM + 5;
+
         if ($settings && $settings->stamp_path) {
-            $stampImagePath = storage_path('app/public/' . $settings->stamp_path);
-            if (file_exists($stampImagePath)) {
+            $sPath = storage_path('app/public/' . $settings->stamp_path);
+            if (file_exists($sPath)) {
                 try {
-                    $imageInfo = @getimagesize($stampImagePath);
-                    if ($imageInfo !== false) {
-                        $stampWidthMM = 40;
-                        $aspectRatio = $imageInfo[1] / $imageInfo[0];
-                        $stampHeightMM = $stampWidthMM * $aspectRatio;
-                        
-                        $currentY = $pdf->GetY();
-                        
-                        // If we are very close to the bottom, don't push to a new page, just draw
+                    $imgInfo = @getimagesize($sPath);
+                    if ($imgInfo) {
+                        $stampHeightMM = $stampWidthMM * ($imgInfo[1] / $imgInfo[0]);
+                        $yPos = $pageHeight - $footerHeightMM - $stampHeightMM - 5;
                         $pdf->setRTL(false);
-                        $xPos = $leftMargin; // left side
-                        $pdf->Image($stampImagePath, $xPos, $currentY + 5, $stampWidthMM, $stampHeightMM, '', '', '', false, 300, '', false, false, 0, false, false, false);
-                        $pdf->SetY($currentY + $stampHeightMM + 10);
+                        $pdf->Image($sPath, $stampXPos, $yPos, $stampWidthMM, $stampHeightMM, '', '', '', false, 300, '', false, false, 0, false, false, false);
                         $pdf->setRTL(true);
                     }
                 } catch (\Exception $e) {
@@ -474,20 +484,15 @@ class CustomerController extends Controller
         }
 
         if ($settings && $settings->e_stamp_path) {
-            $eStampImagePath = storage_path('app/public/' . $settings->e_stamp_path);
-            if (file_exists($eStampImagePath)) {
+            $ePath = storage_path('app/public/' . $settings->e_stamp_path);
+            if (file_exists($ePath)) {
                 try {
-                    $imageInfo = @getimagesize($eStampImagePath);
-                    if ($imageInfo !== false) {
-                        $stampWidthMM = 40;
-                        $aspectRatio = $imageInfo[1] / $imageInfo[0];
-                        $stampHeightMM = $stampWidthMM * $aspectRatio;
-                        
-                        $currentY = $pdf->GetY();
+                    $imgInfo = @getimagesize($ePath);
+                    if ($imgInfo) {
+                        $eStampHeightMM = $stampWidthMM * ($imgInfo[1] / $imgInfo[0]);
+                        $yPos = $pageHeight - $footerHeightMM - $eStampHeightMM - 5;
                         $pdf->setRTL(false);
-                        $xPos = $leftMargin; // left side
-                        $pdf->Image($eStampImagePath, $xPos, $currentY, $stampWidthMM, $stampHeightMM, '', '', '', false, 300, '', false, false, 0, false, false, false);
-                        $pdf->SetY($currentY + $stampHeightMM + 5);
+                        $pdf->Image($ePath, $eStampXPos, $yPos, $stampWidthMM, $eStampHeightMM, '', '', '', false, 300, '', false, false, 0, false, false, false);
                         $pdf->setRTL(true);
                     }
                 } catch (\Exception $e) {
@@ -496,30 +501,16 @@ class CustomerController extends Controller
             }
         }
 
-        if ($settings && $settings->footer_path) {
-            $footerImagePath = storage_path('app/public/' . $settings->footer_path);
-            if (file_exists($footerImagePath)) {
-                try {
-                    $imageInfo = @getimagesize($footerImagePath);
-                    if ($imageInfo !== false) {
-                        $maxFooterWidth = $pageWidth;
-                        $aspectRatio = $imageInfo[1] / $imageInfo[0];
-                        $footerWidthMM = $maxFooterWidth;
-                        $footerHeightMM = $footerWidthMM * $aspectRatio;
-
-                        // Draw footer at the absolute bottom of the current page
-                        $pdf->setRTL(false);
-                        $yPos = $pageHeight - $footerHeightMM;
-                        $pdf->Image($footerImagePath, 0, $yPos, $footerWidthMM, $footerHeightMM, '', '', '', false, 300, '', false, false, 0, false, false, false);
-                        $pdf->setRTL(true);
-                    }
-                } catch (\Exception $e) {
-                    Log::warning('Failed to load footer image: ' . $e->getMessage());
-                }
+        if ($footerImagePath) {
+            try {
+                $pdf->setRTL(false);
+                $pdf->Image($footerImagePath, 0, $pageHeight - $footerHeightMM - 4, $pageWidth, $footerHeightMM, '', '', '', false, 300, '', false, false, 0, false, false, false);
+                $pdf->setRTL(true);
+            } catch (\Exception $e) {
+                Log::warning('Failed to load footer image: ' . $e->getMessage());
             }
         }
 
-        // Re-enable auto page break
         $pdf->SetAutoPageBreak(true, $bottomMargin);
 
         // Generate PDF and return as response
@@ -552,27 +543,30 @@ class CustomerController extends Controller
                 if ($reservation) {
                     $checkIn = new \DateTime($reservation->check_in_date);
                     $checkOut = new \DateTime($reservation->check_out_date);
-                    $interval = $checkIn->diff($checkOut);
-                    $days = max(1, $interval->days);
+                    $days = max(1, $checkIn->diff($checkOut)->days);
 
-                    $roomNames = [];
-                    foreach ($reservation->rooms as $room) {
-                        $roomNames[] = 'غرفة ' . $room->number;
+                    // Per-room transaction: use notes for room name; legacy: show all rooms
+                    $isPerRoom = str_contains($transaction->reference ?? '', '-ROOM-');
+                    if ($isPerRoom && $transaction->notes) {
+                        $roomDisplay = $transaction->notes;
+                    } else {
+                        $roomNames = $reservation->rooms->map(fn($r) => 'غرفة ' . $r->number)->all();
+                        $roomDisplay = implode(', ', $roomNames);
                     }
 
                     $runningBalance += $transaction->amount;
 
                     $entries[] = [
-                        'id' => $transaction->id,
+                        'id'             => $transaction->id,
                         'reservation_id' => $reservation->id,
-                        'type' => 'reservation',
-                        'date' => date('d/m/Y', strtotime($transaction->transaction_date)),
-                        'description' => 'حجز #' . $reservation->id . ' - ' . implode(', ', $roomNames),
-                        'rooms' => implode(', ', $roomNames),
-                        'days' => $days,
-                        'debit' => $transaction->amount,
-                        'credit' => 0,
-                        'balance' => $runningBalance
+                        'type'           => 'reservation',
+                        'date'           => date('d/m/Y', strtotime($transaction->transaction_date)),
+                        'description'    => 'حجز #' . $reservation->id . ' - ' . $roomDisplay,
+                        'rooms'          => $roomDisplay,
+                        'days'           => $days,
+                        'debit'          => $transaction->amount,
+                        'credit'         => 0,
+                        'balance'        => $runningBalance
                     ];
                 } else {
                     // Debit without reservation (shouldn't happen normally, but handle gracefully)
