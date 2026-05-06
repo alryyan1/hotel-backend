@@ -36,6 +36,9 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::apiResource('rooms', \App\Http\Controllers\Api\RoomController::class);
     Route::apiResource('reservations', \App\Http\Controllers\Api\ReservationController::class);
     Route::get('customers/all', [\App\Http\Controllers\Api\CustomerController::class, 'fetchAll']);
+    Route::get('customers/trashed', [\App\Http\Controllers\Api\CustomerController::class, 'trashed']);
+    Route::post('customers/{id}/restore', [\App\Http\Controllers\Api\CustomerController::class, 'restore']);
+    Route::delete('customers/{id}/force', [\App\Http\Controllers\Api\CustomerController::class, 'forceDestroy']);
     Route::apiResource('customers', \App\Http\Controllers\Api\CustomerController::class);
     Route::apiResource('users', \App\Http\Controllers\Api\UserController::class);
     Route::apiResource('services', \App\Http\Controllers\Api\ServiceController::class);

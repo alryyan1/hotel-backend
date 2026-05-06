@@ -107,13 +107,46 @@ class CustomerController extends Controller
 
     public function destroy(Customer $customer): JsonResponse
     {
-        // Delete associated document if exists
+        $customer->delete();
+        return response()->json(['message' => 'Deleted']);
+    }
+
+    public function trashed(Request $request): JsonResponse
+    {
+        $query = Customer::onlyTrashed();
+
+        if ($request->has('search') && $request->get('search')) {
+            $search = $request->get('search');
+            $query->where(function ($q) use ($search) {
+                $q->where('name', 'like', "%{$search}%")
+                    ->orWhere('phone', 'like', "%{$search}%")
+                    ->orWhere('national_id', 'like', "%{$search}%");
+            });
+        }
+
+        $perPage = min((int) $request->get('per_page', 20), 100);
+        $customers = $query->orderByDesc('deleted_at')->paginate($perPage);
+
+        return response()->json($customers);
+    }
+
+    public function restore(int $id): JsonResponse
+    {
+        $customer = Customer::onlyTrashed()->findOrFail($id);
+        $customer->restore();
+        return response()->json(['message' => 'Restored', 'customer' => $customer]);
+    }
+
+    public function forceDestroy(int $id): JsonResponse
+    {
+        $customer = Customer::onlyTrashed()->findOrFail($id);
+
         if ($customer->document_path && Storage::disk('public')->exists($customer->document_path)) {
             Storage::disk('public')->delete($customer->document_path);
         }
 
-        $customer->delete();
-        return response()->json(['message' => 'Deleted']);
+        $customer->forceDelete();
+        return response()->json(['message' => 'Permanently deleted']);
     }
 
     public function uploadDocument(Request $request, Customer $customer): JsonResponse
