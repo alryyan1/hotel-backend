@@ -51,6 +51,8 @@ class Customer extends Model
         'date_of_birth',
         'gender',
         'type',
+        'contact_name_1',
+        'contact_name_2',
         'document_path',
     ];
 

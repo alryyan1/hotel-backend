@@ -70,6 +70,8 @@ class CustomerController extends Controller
                 'date_of_birth' => 'nullable|date',
                 'gender' => 'nullable|in:male,female',
                 'type' => 'nullable|in:individual,company',
+                'contact_name_1' => 'nullable|string|max:255',
+                'contact_name_2' => 'nullable|string|max:255',
             ]);
 
             $customer = Customer::create($validated);
@@ -96,6 +98,8 @@ class CustomerController extends Controller
                 'date_of_birth' => 'nullable|date',
                 'gender' => 'nullable|in:male,female',
                 'type' => 'nullable|in:individual,company',
+                'contact_name_1' => 'nullable|string|max:255',
+                'contact_name_2' => 'nullable|string|max:255',
             ]);
 
             $customer->update($validated);
@@ -375,8 +379,10 @@ class CustomerController extends Controller
 
         $customerInfo = [
             'الاسم: ' . $customer->name,
+            ($customer->type === 'company' && $customer->contact_name_1) ? 'العميل 1: ' . $customer->contact_name_1 : null,
+            ($customer->type === 'company' && $customer->contact_name_2) ? 'العميل 2: ' . $customer->contact_name_2 : null,
             $customer->phone ? 'الهاتف: ' . $customer->phone : null,
-            $customer->national_id ? 'الرقم الوطني: ' . $customer->national_id : null,
+            $customer->national_id ? ($customer->type === 'company' ? 'السجل التجاري: ' : 'الرقم الوطني: ') . $customer->national_id : null,
         ];
 
         foreach (array_filter($customerInfo) as $info) {
