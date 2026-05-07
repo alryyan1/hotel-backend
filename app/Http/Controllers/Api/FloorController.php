@@ -26,7 +26,7 @@ class FloorController extends Controller
     {
         try {
             $validated = $request->validate([
-                'number' => 'required|integer|unique:floors,number',
+                'number' => 'required|string|max:50|unique:floors,number',
                 'name' => 'nullable|string|max:255',
                 'description' => 'nullable|string|max:1000',
             ]);
@@ -59,7 +59,7 @@ class FloorController extends Controller
     {
         try {
             $validated = $request->validate([
-                'number' => 'required|integer|unique:floors,number,' . $floor->id,
+                'number' => 'required|string|max:50|unique:floors,number,' . $floor->id,
                 'name' => 'nullable|string|max:255',
                 'description' => 'nullable|string|max:1000',
             ]);
