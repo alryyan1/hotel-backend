@@ -10,10 +10,34 @@ use Illuminate\Validation\ValidationException;
 
 class RoomController extends Controller
 {
-    public function all(): JsonResponse
+    public function all(Request $request): JsonResponse
     {
-        $rooms = Room::with(['floor', 'type'])->get();
-        return response()->json($rooms);
+        $query = Room::with(['floor', 'type']);
+
+        $checkIn  = $request->query('check_in_date');
+        $checkOut = $request->query('check_out_date');
+        $excludeReservationId = $request->query('exclude_reservation_id');
+
+        if ($checkIn && $checkOut) {
+            $query->whereDoesntHave('reservations', function ($q) use ($checkIn, $checkOut, $excludeReservationId) {
+                if ($excludeReservationId) {
+                    $q->where('reservations.id', '<>', $excludeReservationId);
+                }
+                $q->where(function ($p) use ($checkIn, $checkOut) {
+                    $p->where(function ($x) use ($checkIn, $checkOut) {
+                        $x->where('reservation_room.check_in_date', '<', $checkOut)
+                          ->where('reservation_room.check_out_date', '>', $checkIn);
+                    })->orWhere(function ($x) use ($checkIn, $checkOut) {
+                        $x->whereNull('reservation_room.check_in_date')
+                          ->whereNull('reservation_room.check_out_date')
+                          ->where('reservations.check_in_date', '<', $checkOut)
+                          ->where('reservations.check_out_date', '>', $checkIn);
+                    });
+                });
+            });
+        }
+
+        return response()->json($query->get());
     }
 
     /**
