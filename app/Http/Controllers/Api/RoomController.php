@@ -10,6 +10,12 @@ use Illuminate\Validation\ValidationException;
 
 class RoomController extends Controller
 {
+    public function all(): JsonResponse
+    {
+        $rooms = Room::with(['floor', 'type'])->get();
+        return response()->json($rooms);
+    }
+
     /**
      * Display a listing of the resource.
      */

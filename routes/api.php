@@ -33,6 +33,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::apiResource('floors', \App\Http\Controllers\Api\FloorController::class);
     Route::apiResource('room-types', \App\Http\Controllers\Api\RoomTypeController::class);
     Route::apiResource('room-statuses', \App\Http\Controllers\Api\RoomStatusController::class);
+    Route::get('rooms/all', [\App\Http\Controllers\Api\RoomController::class, 'all']);
     Route::apiResource('rooms', \App\Http\Controllers\Api\RoomController::class);
     Route::apiResource('reservations', \App\Http\Controllers\Api\ReservationController::class);
     Route::get('customers/all', [\App\Http\Controllers\Api\CustomerController::class, 'fetchAll']);
@@ -55,6 +56,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('reservations/{reservation}/cancel', [\App\Http\Controllers\Api\ReservationController::class, 'cancel']);
     Route::post('reservations/{reservation}/extend', [\App\Http\Controllers\Api\ReservationController::class, 'extend']);
     Route::post('reservations/{reservation}/update-dates', [\App\Http\Controllers\Api\ReservationController::class, 'updateDates']);
+    Route::post('reservations/{reservation}/transfer-room', [\App\Http\Controllers\Api\ReservationController::class, 'transferRoom']);
     Route::get('reservations/export/excel', [\App\Http\Controllers\Api\ReservationController::class, 'exportExcel']);
     Route::get('reservations/{reservation}/invoice/pdf', [\App\Http\Controllers\Api\ReservationController::class, 'exportInvoicePdf']);
 

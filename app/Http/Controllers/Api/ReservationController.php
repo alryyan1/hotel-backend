@@ -620,6 +620,91 @@ class ReservationController extends Controller
         return response()->json($reservation->fresh()->load(['customer', 'rooms.type', 'transactions']));
     }
 
+    public function transferRoom(Request $request, Reservation $reservation)
+    {
+        $data = $request->validate([
+            'old_room_id' => ['required', 'exists:rooms,id'],
+            'new_room_id' => ['required', 'exists:rooms,id', 'different:old_room_id'],
+        ]);
+
+        $oldRoom = $reservation->rooms()->with('type')->where('rooms.id', $data['old_room_id'])->first();
+        if (!$oldRoom) {
+            return response()->json(['message' => 'الغرفة القديمة غير موجودة في هذا الحجز'], 422);
+        }
+
+        $ci = $oldRoom->pivot->check_in_date ?? $reservation->check_in_date;
+        $co = $oldRoom->pivot->check_out_date ?? $reservation->check_out_date;
+        $ci = $ci instanceof \Carbon\Carbon ? $ci->toDateString() : substr($ci, 0, 10);
+        $co = $co instanceof \Carbon\Carbon ? $co->toDateString() : substr($co, 0, 10);
+
+        // Check new room availability
+        $overlap = Reservation::query()
+            ->where('id', '<>', $reservation->id)
+            ->whereHas('rooms', function ($q) use ($data, $ci, $co) {
+                $q->where('rooms.id', $data['new_room_id'])
+                    ->where(function ($p) use ($ci, $co) {
+                        $p->where(function ($x) use ($ci, $co) {
+                            $x->where('reservation_room.check_in_date', '<', $co)
+                                ->where('reservation_room.check_out_date', '>', $ci);
+                        })->orWhere(function ($x) use ($ci, $co) {
+                            $x->whereNull('reservation_room.check_in_date')
+                                ->whereNull('reservation_room.check_out_date')
+                                ->where('reservations.check_in_date', '<', $co)
+                                ->where('reservations.check_out_date', '>', $ci);
+                        });
+                    });
+            })
+            ->exists();
+
+        if ($overlap) {
+            return response()->json(['message' => 'الغرفة الجديدة غير متاحة للفترة المحددة'], 422);
+        }
+
+        $newRoom = \App\Models\Room::with('type')->find($data['new_room_id']);
+
+        DB::transaction(function () use ($reservation, $oldRoom, $newRoom, $ci, $co, $data) {
+            $days    = max(1, (new \DateTime($ci))->diff(new \DateTime($co))->days);
+            $newRate = (float) ($newRoom->type->base_price ?? 0);
+
+            // Swap rooms in pivot
+            $reservation->rooms()->detach($data['old_room_id']);
+            $reservation->rooms()->attach($data['new_room_id'], [
+                'check_in_date'  => $ci,
+                'check_out_date' => $co,
+                'rate'           => $newRate,
+                'currency'       => 'SDG',
+            ]);
+
+            // Update the per-room debit transaction
+            $oldRef = 'RES-' . $reservation->id . '-ROOM-' . $data['old_room_id'];
+            $newRef = 'RES-' . $reservation->id . '-ROOM-' . $data['new_room_id'];
+
+            $t = Transaction::where('reservation_id', $reservation->id)
+                ->where('reference', $oldRef)
+                ->first();
+
+            if ($t) {
+                $t->update([
+                    'amount'           => $days * $newRate,
+                    'reference'        => $newRef,
+                    'notes'            => "حجز غرفة {$newRoom->number} - وصول {$ci} - مغادرة {$co}",
+                    'transaction_date' => $ci,
+                ]);
+            }
+
+            // Recalculate reservation total
+            $fresh = $reservation->fresh(['rooms.type']);
+            $total = 0;
+            foreach ($fresh->rooms as $room) {
+                $rate   = $room->pivot->rate ?? ($room->type->base_price ?? 0);
+                $total += $days * (float) $rate;
+            }
+            $reservation->update(['total_amount' => $total]);
+        });
+
+        return response()->json($reservation->fresh()->load(['customer', 'rooms.type', 'transactions']));
+    }
+
     /**
      * Export reservations to Excel
      */
