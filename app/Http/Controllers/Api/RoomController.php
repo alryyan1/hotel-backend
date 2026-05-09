@@ -23,6 +23,8 @@ class RoomController extends Controller
                 if ($excludeReservationId) {
                     $q->where('reservations.id', '<>', $excludeReservationId);
                 }
+                // فقط الحجوزات النشطة تمنع الغرفة (الملغاة والمغادَرة لا تحجز الغرفة)
+                $q->whereNotIn('reservations.status', ['cancelled', 'checked_out']);
                 $q->where(function ($p) use ($checkIn, $checkOut) {
                     $p->where(function ($x) use ($checkIn, $checkOut) {
                         $x->where('reservation_room.check_in_date', '<', $checkOut)

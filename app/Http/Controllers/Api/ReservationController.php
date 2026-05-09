@@ -637,9 +637,10 @@ class ReservationController extends Controller
         $ci = $ci instanceof \Carbon\Carbon ? $ci->toDateString() : substr($ci, 0, 10);
         $co = $co instanceof \Carbon\Carbon ? $co->toDateString() : substr($co, 0, 10);
 
-        // Check new room availability
+        // Check new room availability (exclude cancelled/checked_out reservations)
         $overlap = Reservation::query()
             ->where('id', '<>', $reservation->id)
+            ->whereNotIn('status', ['cancelled', 'checked_out'])
             ->whereHas('rooms', function ($q) use ($data, $ci, $co) {
                 $q->where('rooms.id', $data['new_room_id'])
                     ->where(function ($p) use ($ci, $co) {
