@@ -27,6 +27,8 @@ use App\Models\RoomType;
 
 class ReservationController extends Controller
 {
+    public function __construct(private ReservationSmsService $smsService) {}
+
     /**
      * Display a listing of the resource.
      */
@@ -205,13 +207,7 @@ class ReservationController extends Controller
 
         $reservation->update(['total_amount' => $totalDebit]);
 
-        // SMS service disabled
-        $smsResult = ['success' => false, 'error' => 'SMS service disabled'];
-
-        $responseData = $reservation->load(['customer', 'rooms', 'transactions']);
-        $responseData->sms_result = $smsResult;
-
-        return response()->json($responseData, 201);
+        return response()->json($reservation->load(['customer', 'rooms', 'transactions']), 201);
     }
 
     /**
@@ -310,8 +306,7 @@ class ReservationController extends Controller
         }
         $reservation->update(['status' => 'confirmed']);
 
-        // SMS service disabled
-        $smsResult = ['success' => false, 'error' => 'SMS service disabled'];
+        $smsResult = $this->smsService->sendReservationConfirmationSms($reservation);
 
         $responseData = $reservation->load(['customer', 'rooms', 'payments']);
         $responseData->sms_result = $smsResult;
