@@ -4,7 +4,6 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Reservation;
-use App\Models\Room;
 use App\Models\Transaction;
 use App\Services\ReservationSmsService;
 use Illuminate\Http\Request;
@@ -16,7 +15,6 @@ use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
 use PhpOffice\PhpSpreadsheet\Style\Alignment;
 use PhpOffice\PhpSpreadsheet\Style\Fill;
 use PhpOffice\PhpSpreadsheet\Style\Border;
-use PhpOffice\PhpSpreadsheet\Style\Font;
 use PhpOffice\PhpSpreadsheet\Worksheet\Drawing;
 use PhpOffice\PhpSpreadsheet\Worksheet\PageSetup;
 use Symfony\Component\HttpFoundation\StreamedResponse;
@@ -295,7 +293,11 @@ class ReservationController extends Controller
      */
     public function destroy(Reservation $reservation)
     {
-        $reservation->delete();
+        DB::transaction(function () use ($reservation) {
+            Transaction::where('reservation_id', $reservation->id)->delete();
+            \App\Models\Payment::where('reservation_id', $reservation->id)->delete();
+            $reservation->delete();
+        });
         return response()->json(['message' => 'Deleted']);
     }
 
@@ -658,7 +660,7 @@ class ReservationController extends Controller
 
         $newRoom = \App\Models\Room::with('type')->find($data['new_room_id']);
 
-        DB::transaction(function () use ($reservation, $oldRoom, $newRoom, $ci, $co, $data) {
+        DB::transaction(function () use ($reservation, $newRoom, $ci, $co, $data) {
             $days    = max(1, (new \DateTime($ci))->diff(new \DateTime($co))->days);
             $newRate = (float) ($newRoom->type->base_price ?? 0);
 
@@ -1184,6 +1186,38 @@ class ReservationController extends Controller
             ->where('type', 'credit')
             ->sum('amount');
         $remainingAmount = $totalAmount - $paidAmount;
+
+        // Bank account info (before payment summary)
+        $bankLines = [];
+        if ($settings && $settings->bank_account_number_1) {
+            $line = 'يرجى سداد المبلغ في حساب الفندق';
+            if ($settings->bank_name_1) {
+                $line .= ' ' . $settings->bank_name_1;
+            }
+            $line .= ' رقم الحساب: ' . $settings->bank_account_number_1;
+            if ($settings->bank_account_name_1) {
+                $line .= ' باسم: ' . $settings->bank_account_name_1;
+            }
+            $bankLines[] = $line;
+        }
+        if ($settings && $settings->bank_account_number_2) {
+            $line = 'او في حساب';
+            if ($settings->bank_name_2) {
+                $line .= ' ' . $settings->bank_name_2;
+            }
+            $line .= ' رقم: ' . $settings->bank_account_number_2;
+            if ($settings->bank_account_name_2) {
+                $line .= ' باسم: ' . $settings->bank_account_name_2;
+            }
+            $bankLines[] = $line;
+        }
+        if (!empty($bankLines)) {
+            $pdf->Ln(5);
+            $pdf->SetFont('arial', 'B', 10);
+            foreach ($bankLines as $line) {
+                $pdf->Cell(0, 7, $line, 0, 1, 'R');
+            }
+        }
 
         $pdf->Ln(5);
 

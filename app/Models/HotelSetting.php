@@ -59,5 +59,11 @@ class HotelSetting extends Model
         'phone',
         'phone_2',
         'email',
+        'bank_name_1',
+        'bank_account_number_1',
+        'bank_account_name_1',
+        'bank_name_2',
+        'bank_account_number_2',
+        'bank_account_name_2',
     ];
 }
