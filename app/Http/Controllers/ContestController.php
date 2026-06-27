@@ -65,9 +65,16 @@ class ContestController extends Controller
     {
         // 1. التحقق من البيانات القادمة من الـ React
         $validated = $request->validate([
-            'full_name'    => 'required|string|max:255',
-            'phone_number' => 'required|string|max:50',
+            'full_name'    => 'required|string|max:255|unique:contest_participants,full_name',
+            'phone_number' => 'required|string|min:10|max:50|unique:contest_participants,phone_number',
             'address'      => 'required|string|max:255',
+        ], [
+            'full_name.unique'      => 'هذا الاسم مسجّل مسبقاً في المسابقة.',
+            'phone_number.unique'   => 'رقم الهاتف هذا مسجّل مسبقاً في المسابقة.',
+            'phone_number.min'      => 'رقم الهاتف يجب أن يكون 10 أرقام على الأقل.',
+            'full_name.required'    => 'الاسم الكامل مطلوب.',
+            'phone_number.required' => 'رقم الهاتف مطلوب.',
+            'address.required'      => 'السكن مطلوب.',
         ]);
 
         // 2. حفظ البيانات في الجدول الجديد
