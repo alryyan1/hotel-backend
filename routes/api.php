@@ -22,6 +22,8 @@ Route::prefix('public')->group(function () {
 
     // Public hotel settings
     Route::get('settings/hotel', [\App\Http\Controllers\Api\HotelSettingController::class, 'publicShow']);
+
+    Route::post('participate', [\App\Http\Controllers\ContestController::class, 'store']);
 });
 
 // Protected API
@@ -121,6 +123,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('cleaning-notifications/{cleaningNotification}', [\App\Http\Controllers\Api\CleaningNotificationController::class, 'show']);
     Route::post('cleaning-notifications/{cleaningNotification}/complete', [\App\Http\Controllers\Api\CleaningNotificationController::class, 'complete']);
     Route::post('cleaning-notifications/{cleaningNotification}/dismiss', [\App\Http\Controllers\Api\CleaningNotificationController::class, 'dismiss']);
+
+    // Contest Participants
+    Route::get('contest-participants', [\App\Http\Controllers\ContestController::class, 'index']);
+    Route::post('contest-draw', [\App\Http\Controllers\ContestController::class, 'draw']);
 
     // Accounting
     Route::get('accounting/summary', [\App\Http\Controllers\Api\AccountingController::class, 'getSummary']);

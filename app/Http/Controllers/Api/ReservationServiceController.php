@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\ReservationService;
+use App\Models\Transaction;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 use Illuminate\Support\Facades\Log;
@@ -31,14 +32,29 @@ class ReservationServiceController extends Controller
             'reservation_id' => 'required|exists:reservations,id',
             'room_id' => 'required|exists:rooms,id',
             'service_id' => 'required|exists:services,id',
-            'amount' => 'required|numeric|min:0',
+            'amount' => 'nullable|numeric|min:0',
             'payment_method' => 'nullable|string',
             'notes' => 'nullable|string|max:1000',
         ]);
 
         $reservationService = ReservationService::create($validated);
-        
-        return response()->json($reservationService->load(['reservation.customer', 'room', 'service']), 201);
+        $reservationService->load(['reservation.customer', 'room', 'service']);
+
+        // Always create a debit transaction so the service appears in the customer's ledger
+        $reservation = $reservationService->reservation;
+        if ($reservation && $reservation->customer_id) {
+            Transaction::create([
+                'customer_id'            => $reservation->customer_id,
+                'reservation_id'         => $reservation->id,
+                'reservation_service_id' => $reservationService->id,
+                'type'                   => 'debit',
+                'amount'                 => $reservationService->amount ?? 0,
+                'transaction_date'       => now(),
+                'notes'                  => $reservationService->service->name ?? 'خدمة',
+            ]);
+        }
+
+        return response()->json($reservationService, 201);
     }
 
     public function show(ReservationService $reservationService)
@@ -57,11 +73,42 @@ class ReservationServiceController extends Controller
         ]);
 
         $reservationService->update($validated);
-        return response()->json($reservationService->fresh()->load(['reservation', 'room', 'service']));
+        $reservationService->refresh()->load(['reservation.customer', 'room', 'service', 'transaction']);
+
+        $newAmount = $reservationService->amount ?? 0;
+        $serviceName = $reservationService->service->name ?? 'خدمة';
+
+        if ($reservationService->transaction) {
+            // Update existing transaction
+            $reservationService->transaction->update([
+                'amount' => $newAmount,
+                'notes'  => $serviceName,
+            ]);
+        } else {
+            // No transaction yet (old data) — create one now
+            $reservation = $reservationService->reservation;
+            if ($reservation && $reservation->customer_id) {
+                Transaction::create([
+                    'customer_id'            => $reservation->customer_id,
+                    'reservation_id'         => $reservation->id,
+                    'reservation_service_id' => $reservationService->id,
+                    'type'                   => 'debit',
+                    'amount'                 => $newAmount,
+                    'transaction_date'       => now(),
+                    'notes'                  => $serviceName,
+                ]);
+            }
+        }
+
+        return response()->json($reservationService);
     }
 
     public function destroy(ReservationService $reservationService)
     {
+        // Delete linked debit transaction before deleting the service
+        $reservationService->load('transaction');
+        $reservationService->transaction?->delete();
+
         $reservationService->delete();
         return response()->json(null, 204);
     }

@@ -240,8 +240,8 @@ class CustomerController extends Controller
 
     public function getLedger(Customer $customer): JsonResponse
     {
-        // Load customer with transactions and related reservations/rooms
-        $customer->load(['transactions.reservation.rooms.type']);
+        // Load customer with transactions and related reservations/rooms/services
+        $customer->load(['transactions.reservation.rooms.type', 'transactions.reservationService.service']);
 
         // Get room types for pricing (for backward compatibility if needed)
         $roomTypes = RoomType::all()->keyBy('id');
@@ -263,8 +263,8 @@ class CustomerController extends Controller
 
     public function exportLedgerPdf(Customer $customer): Response
     {
-        // Load customer with transactions and related reservations/rooms
-        $customer->load(['transactions.reservation.rooms.type']);
+        // Load customer with transactions and related reservations/rooms/services
+        $customer->load(['transactions.reservation.rooms.type', 'transactions.reservationService.service']);
 
         // Get room types for pricing (for backward compatibility if needed)
         $roomTypes = RoomType::all()->keyBy('id');
@@ -443,9 +443,13 @@ class CustomerController extends Controller
             
             $pdf->MultiCell($colDescription, $rowHeight, $entry['description'], 1, 'C', false, 0, '', '', true, 0, false, true, $rowHeight, 'M');
 
-            $details = $entry['type'] === 'reservation'
-                ? ($entry['rooms'] ?? '')
-                : ($entry['paymentMethod'] ?? '');
+            if ($entry['type'] === 'reservation') {
+                $details = $entry['rooms'] ?? '';
+            } elseif ($entry['type'] === 'service') {
+                $details = 'خدمة';
+            } else {
+                $details = $entry['paymentMethod'] ?? '';
+            }
             $pdf->MultiCell($colDetails, $rowHeight, $details, 1, 'C', false, 0, '', '', true, 0, false, true, $rowHeight, 'M');
 
             $days = $entry['days'] ?? '-';
@@ -576,7 +580,26 @@ class CustomerController extends Controller
 
         foreach ($sortedTransactions as $transaction) {
             if ($transaction->type === 'debit') {
-                // Debit transaction (reservation)
+                // Service debit transaction
+                if ($transaction->reservation_service_id) {
+                    $serviceName = $transaction->reservationService?->service?->name ?? ($transaction->notes ?? 'خدمة');
+                    $runningBalance += $transaction->amount;
+                    $entries[] = [
+                        'id'                     => $transaction->id,
+                        'reservation_service_id' => $transaction->reservation_service_id,
+                        'reservation_id'         => $transaction->reservation_id,
+                        'type'                   => 'service',
+                        'date'                   => date('d/m/Y', strtotime($transaction->transaction_date)),
+                        'description'            => 'خدمة: ' . $serviceName,
+                        'days'                   => null,
+                        'debit'                  => $transaction->amount,
+                        'credit'                 => 0,
+                        'balance'                => $runningBalance,
+                    ];
+                    continue;
+                }
+
+                // Room debit transaction (reservation)
                 $reservation = $transaction->reservation;
 
                 if ($reservation) {
