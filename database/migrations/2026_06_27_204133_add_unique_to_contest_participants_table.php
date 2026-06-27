@@ -2,6 +2,7 @@
 
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
@@ -11,6 +12,10 @@ return new class extends Migration
      */
     public function up(): void
     {
+        // حذف المكررين تلقائياً — يبقى أقدم تسجيل لكل اسم ورقم هاتف
+        DB::statement('DELETE FROM contest_participants WHERE id NOT IN (SELECT id FROM (SELECT MIN(id) AS id FROM contest_participants GROUP BY full_name) AS t)');
+        DB::statement('DELETE FROM contest_participants WHERE id NOT IN (SELECT id FROM (SELECT MIN(id) AS id FROM contest_participants GROUP BY phone_number) AS t)');
+
         $indexes = collect(\DB::select("SHOW INDEX FROM contest_participants"))->pluck('Key_name')->toArray();
 
         Schema::table('contest_participants', function (Blueprint $table) use ($indexes) {
