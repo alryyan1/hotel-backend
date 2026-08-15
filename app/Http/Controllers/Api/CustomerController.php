@@ -355,14 +355,15 @@ class CustomerController extends Controller
         $availableWidth = $pageWidth - $leftMargin - $rightMargin; // 180mm
 
         // Define column widths (proportioned to fit available width)
-        $colDate = 22;      // التاريخ
-        $colDescription = 51; // الوصف
-        $colDetails = 34;    // الغرف / طريقة الدفع
-        $colDays = 17;       // الأيام
-        $colDebit = 17;      // مدين
-        $colCredit = 17;     // دائن
-        $colBalance = 22;    // الرصيد
-        // Total: 22+51+34+17+17+17+22 = 180mm
+        $colDate = 20;      // التاريخ
+        $colDescription = 42; // الوصف
+        $colDetails = 26;    // الغرف / طريقة الدفع
+        $colDays = 14;       // الأيام
+        $colRate = 18;       // سعر الليلة
+        $colDebit = 18;      // مدين
+        $colCredit = 18;     // دائن
+        $colBalance = 24;    // الرصيد
+        // Total: 20+42+26+14+18+18+18+24 = 180mm
 
         // Set font for Arabic text (Arial)
         $pdf->SetFont('arial', '', 10);
@@ -401,14 +402,15 @@ class CustomerController extends Controller
         $pdf->SetFont('arial', 'B', 10);
         $pdf->SetFillColor(230, 230, 230);
 
-        // NEW ORDER (RTL: Date -> Description -> Details -> Days -> Debit -> Credit -> Balance)
+        // NEW ORDER (RTL: Date -> Description -> Details -> Days -> Rate -> Debit -> Credit -> Balance)
         $pdf->Cell($colDate, 8, 'التاريخ', 1, 0, 'C', true);         // 1. Far Right
         $pdf->Cell($colDescription, 8, 'الوصف', 1, 0, 'C', true);     // 2.
         $pdf->Cell($colDetails, 8, 'الغرف / طريقة الدفع', 1, 0, 'C', true); // 3.
         $pdf->Cell($colDays, 8, 'الأيام', 1, 0, 'C', true);         // 4.
-        $pdf->Cell($colDebit, 8, 'مدين', 1, 0, 'C', true);          // 5.
-        $pdf->Cell($colCredit, 8, 'دائن', 1, 0, 'C', true);         // 6.
-        $pdf->Cell($colBalance, 8, 'الرصيد', 1, 1, 'C', true);      // 7. Far Left (Note: 1, 1 moves to the next line)
+        $pdf->Cell($colRate, 8, 'سعر الليلة', 1, 0, 'C', true);     // 5.
+        $pdf->Cell($colDebit, 8, 'مدين', 1, 0, 'C', true);          // 6.
+        $pdf->Cell($colCredit, 8, 'دائن', 1, 0, 'C', true);         // 7.
+        $pdf->Cell($colBalance, 8, 'الرصيد', 1, 1, 'C', true);      // 8. Far Left (Note: 1, 1 moves to the next line)
 
         // ... (code after header)
         // Ledger Entries
@@ -424,11 +426,19 @@ class CustomerController extends Controller
                 $totalRefund += $entry['refund_amount'];
             }
 
-            // RTL order: Balance, Credit, Debit, Days, Details, Description, Date
+            // RTL order: Balance, Credit, Debit, Rate, Days, Details, Description, Date
             // ... (inside foreach ($ledgerEntries as $entry) { ... )
 
+            // For room bookings, append the segment's exact period (from -> to) so an
+            // extension is clearly distinguished from the original booking segment on
+            // the printed statement. The nightly rate gets its own column below.
+            $printedDescription = $entry['description'];
+            if ($entry['type'] === 'reservation' && !empty($entry['period'])) {
+                $printedDescription .= "\n" . $entry['period'];
+            }
+
             // Calculate required lines for description
-            $descLines = $pdf->getNumLines($entry['description'], $colDescription);
+            $descLines = $pdf->getNumLines($printedDescription, $colDescription);
             $rowHeight = max(8, $descLines * 5 + 2); // Minimum 8mm, expand as needed
 
             // Check if we need a new page
@@ -437,11 +447,11 @@ class CustomerController extends Controller
             }
 
             // Draw cells with MultiCell to allow natural wrapping and vertical centering
-            // RTL order: Date, Description, Details, Days, Debit, Credit, Balance
-            
+            // RTL order: Date, Description, Details, Days, Rate, Debit, Credit, Balance
+
             $pdf->MultiCell($colDate, $rowHeight, $entry['date'], 1, 'C', false, 0, '', '', true, 0, false, true, $rowHeight, 'M');
-            
-            $pdf->MultiCell($colDescription, $rowHeight, $entry['description'], 1, 'C', false, 0, '', '', true, 0, false, true, $rowHeight, 'M');
+
+            $pdf->MultiCell($colDescription, $rowHeight, $printedDescription, 1, 'C', false, 0, '', '', true, 0, false, true, $rowHeight, 'M');
 
             if ($entry['type'] === 'reservation') {
                 $details = $entry['rooms'] ?? '';
@@ -454,6 +464,9 @@ class CustomerController extends Controller
 
             $days = $entry['days'] ?? '-';
             $pdf->MultiCell($colDays, $rowHeight, $days, 1, 'C', false, 0, '', '', true, 0, false, true, $rowHeight, 'M');
+
+            $rate = !empty($entry['rate']) ? number_format($entry['rate'], 0, '.', ',') : '-';
+            $pdf->MultiCell($colRate, $rowHeight, $rate, 1, 'C', false, 0, '', '', true, 0, false, true, $rowHeight, 'M');
 
             $debit = $entry['debit'] > 0 ? number_format($entry['debit'], 0, '.', ',') : '-';
             $pdf->MultiCell($colDebit, $rowHeight, $debit, 1, 'C', false, 0, '', '', true, 0, false, true, $rowHeight, 'M');
@@ -470,7 +483,7 @@ class CustomerController extends Controller
         // Totals Row (RTL order)
         $pdf->SetFont('arial', 'B', 10);
         $pdf->SetFillColor(240, 240, 240);
-        $totalColSpan = $colDate + $colDescription + $colDetails + $colDays; // 22+51+34+17 = 124
+        $totalColSpan = $colDate + $colDescription + $colDetails + $colDays + $colRate; // spans everything before the money columns
         
         // Deduct refunds from totals to show net paid amount
         $netDebit = $totalDebit - $totalRefund;
@@ -616,6 +629,19 @@ class CustomerController extends Controller
                         $roomDisplay = implode(', ', $roomNames);
                     }
 
+                    // Prefer this transaction's own frozen segment (nights/rate/dates,
+                    // recorded when it was charged) over the reservation's current full
+                    // date range — so an extension priced differently than the original
+                    // booking shows its own days/dates/rate instead of a blended total.
+                    $isExtension = str_starts_with($transaction->reference ?? '', 'EXT-');
+                    $segmentNights = $transaction->nights ?? $days;
+                    $segmentCheckIn = $transaction->check_in_date
+                        ? date('d/m/Y', strtotime($transaction->check_in_date))
+                        : date('d/m/Y', strtotime($reservation->check_in_date));
+                    $segmentCheckOut = $transaction->check_out_date
+                        ? date('d/m/Y', strtotime($transaction->check_out_date))
+                        : date('d/m/Y', strtotime($reservation->check_out_date));
+
                     $runningBalance += $transaction->amount;
 
                     $entries[] = [
@@ -623,9 +649,12 @@ class CustomerController extends Controller
                         'reservation_id' => $reservation->id,
                         'type'           => 'reservation',
                         'date'           => date('d/m/Y', strtotime($transaction->transaction_date)),
-                        'description'    => 'حجز #' . $reservation->id . ' - ' . $roomDisplay,
+                        'description'    => 'حجز #' . $reservation->id . ' - ' . $roomDisplay . ($isExtension ? ' (تمديد)' : ''),
                         'rooms'          => $roomDisplay,
-                        'days'           => $days,
+                        'days'           => $segmentNights,
+                        'period'         => $segmentCheckIn . ' → ' . $segmentCheckOut,
+                        'rate'           => $transaction->rate !== null ? (float) $transaction->rate : null,
+                        'is_extension'   => $isExtension,
                         'debit'          => $transaction->amount,
                         'credit'         => 0,
                         'balance'        => $runningBalance

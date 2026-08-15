@@ -160,12 +160,18 @@ class ReservationController extends Controller
             'notes' => $data['notes'] ?? null,
         ]);
 
-        $syncData = collect($data['rooms'])->mapWithKeys(function ($room) use ($data) {
+        $roomTypesForSync = RoomType::all()->keyBy('id');
+        $roomsById = \App\Models\Room::whereIn('id', collect($data['rooms'])->pluck('id'))->get()->keyBy('id');
+
+        $syncData = collect($data['rooms'])->mapWithKeys(function ($room) use ($data, $roomTypesForSync, $roomsById) {
+            $roomModel = $roomsById[$room['id']] ?? null;
+            $frozenRate = $room['rate'] ?? ($roomModel ? ($roomTypesForSync[$roomModel->room_type_id]->base_price ?? 0) : 0);
+
             return [
                 $room['id'] => [
                     'check_in_date' => $room['check_in_date'] ?? $data['check_in_date'],
                     'check_out_date' => $room['check_out_date'] ?? $data['check_out_date'],
-                    'rate' => $room['rate'] ?? null,
+                    'rate' => $frozenRate,
                     'currency' => $room['currency'] ?? 'SDG',
                 ],
             ];
@@ -173,16 +179,16 @@ class ReservationController extends Controller
 
         $reservation->rooms()->sync($syncData);
 
-        // Create one debit transaction per room
+        // Create one debit transaction per room, freezing the price used at booking time
         $reservation->load(['rooms.type']);
         $roomTypes = RoomType::all()->keyBy('id');
 
-        $checkIn = new \DateTime($reservation->check_in_date);
-        $checkOut = new \DateTime($reservation->check_out_date);
-        $days = max(1, $checkIn->diff($checkOut)->days);
-
         $totalDebit = 0;
         foreach ($reservation->rooms as $room) {
+            $roomCheckIn = $room->pivot->check_in_date ?? $reservation->check_in_date;
+            $roomCheckOut = $room->pivot->check_out_date ?? $reservation->check_out_date;
+            $days = max(1, (new \DateTime($roomCheckIn))->diff(new \DateTime($roomCheckOut))->days);
+
             $basePrice = $room->pivot->rate ?? (
                 ($room->type && $room->type->base_price)
                 ? $room->type->base_price
@@ -194,8 +200,13 @@ class ReservationController extends Controller
             Transaction::create([
                 'customer_id'      => $reservation->customer_id,
                 'reservation_id'   => $reservation->id,
+                'room_id'          => $room->id,
                 'type'             => 'debit',
                 'amount'           => $roomAmount,
+                'rate'             => $basePrice,
+                'nights'           => $days,
+                'check_in_date'    => $roomCheckIn,
+                'check_out_date'   => $roomCheckOut,
                 'currency'         => 'SDG',
                 'transaction_date' => $reservation->check_in_date,
                 'reference'        => 'RES-' . $reservation->id . '-ROOM-' . $room->id,
@@ -270,14 +281,19 @@ class ReservationController extends Controller
         $reservation->update($data);
 
         if (isset($data['rooms'])) {
-            $syncData = collect($data['rooms'])->mapWithKeys(function ($room) use ($data, $reservation) {
+            $roomTypesForSync = RoomType::all()->keyBy('id');
+            $roomsById = \App\Models\Room::whereIn('id', collect($data['rooms'])->pluck('id'))->get()->keyBy('id');
+
+            $syncData = collect($data['rooms'])->mapWithKeys(function ($room) use ($data, $reservation, $roomTypesForSync, $roomsById) {
                 $ciBase = $data['check_in_date'] ?? $reservation->check_in_date;
                 $coBase = $data['check_out_date'] ?? $reservation->check_out_date;
+                $roomModel = $roomsById[$room['id']] ?? null;
+                $frozenRate = $room['rate'] ?? ($roomModel ? ($roomTypesForSync[$roomModel->room_type_id]->base_price ?? 0) : 0);
                 return [
                     $room['id'] => [
                         'check_in_date' => $room['check_in_date'] ?? $ciBase,
                         'check_out_date' => $room['check_out_date'] ?? $coBase,
-                        'rate' => $room['rate'] ?? null,
+                        'rate' => $frozenRate,
                         'currency' => $room['currency'] ?? 'SDG',
                     ],
                 ];
@@ -397,7 +413,17 @@ class ReservationController extends Controller
 
             $reservation->load(['rooms.type']);
             foreach ($reservation->rooms as $room) {
-                $rate = $room->pivot->rate ?? ($room->type->base_price ?? 0);
+                // Refund at the rate of the most recent priced segment for this room
+                // (e.g. an extension's new price), falling back to the frozen booking
+                // rate for reservations/rooms with no per-room transaction history.
+                $latestSegment = Transaction::where('reservation_id', $reservation->id)
+                    ->where('room_id', $room->id)
+                    ->where('type', 'debit')
+                    ->orderByDesc('check_out_date')
+                    ->orderByDesc('id')
+                    ->first();
+
+                $rate = $latestSegment?->rate ?? $room->pivot->rate ?? ($room->type->base_price ?? 0);
                 $refundAmount += $remainingDays * (float) $rate;
             }
         }
@@ -495,41 +521,50 @@ class ReservationController extends Controller
             return response()->json(['message' => 'Extension must be at least one day'], 422);
         }
 
+        // Extra nights are always priced at the room's CURRENT live rate, not the
+        // frozen rate stored on the reservation at booking time — so if the room's
+        // price changed since booking, the already-booked nights keep their original
+        // frozen price while the new extension nights use today's price.
         $extraAmount = 0;
+        $roomRates = [];
         foreach ($reservation->rooms as $room) {
-            $basePrice = $room->pivot->rate ?? (
-                ($room->type && $room->type->base_price)
+            $basePrice = ($room->type && $room->type->base_price)
                 ? $room->type->base_price
-                : ($roomTypes[$room->room_type_id]->base_price ?? 0)
-            );
+                : ($roomTypes[$room->room_type_id]->base_price ?? 0);
+            $roomRates[$room->id] = $basePrice;
             $extraAmount += $extraDays * $basePrice;
         }
 
-        DB::transaction(function () use ($reservation, $newCheckOut, $extraAmount) {
+        DB::transaction(function () use ($reservation, $newCheckOut, $oldCheckOut, $extraAmount, $extraDays, $roomRates) {
             // Update reservation
             $reservation->check_out_date = $newCheckOut;
             $reservation->total_amount += $extraAmount;
             $reservation->save();
 
-            // Update rooms pivot
+            // Update rooms pivot (check_out_date only — pivot.rate stays the original frozen rate)
             foreach ($reservation->rooms as $room) {
                 $reservation->rooms()->updateExistingPivot($room->id, [
                     'check_out_date' => $newCheckOut
                 ]);
-            }
 
-            // Create transaction if amount > 0
-            if ($extraAmount > 0) {
-                Transaction::create([
-                    'customer_id' => $reservation->customer_id,
-                    'reservation_id' => $reservation->id,
-                    'type' => 'debit',
-                    'amount' => $extraAmount,
-                    'currency' => 'SDG',
-                    'transaction_date' => now(),
-                    'reference' => 'EXT-' . $reservation->id . '-' . time(),
-                    'notes' => "Extension to {$newCheckOut}",
-                ]);
+                $roomExtraAmount = $extraDays * $roomRates[$room->id];
+                if ($roomExtraAmount > 0) {
+                    Transaction::create([
+                        'customer_id' => $reservation->customer_id,
+                        'reservation_id' => $reservation->id,
+                        'room_id' => $room->id,
+                        'type' => 'debit',
+                        'amount' => $roomExtraAmount,
+                        'rate' => $roomRates[$room->id],
+                        'nights' => $extraDays,
+                        'check_in_date' => $oldCheckOut,
+                        'check_out_date' => $newCheckOut,
+                        'currency' => 'SDG',
+                        'transaction_date' => now(),
+                        'reference' => 'EXT-' . $reservation->id . '-ROOM-' . $room->id . '-' . time(),
+                        'notes' => 'غرفة ' . $room->number,
+                    ]);
+                }
             }
         });
 
@@ -594,13 +629,30 @@ class ReservationController extends Controller
             $isPerRoom = $debitTransactions->contains(fn($t) => str_contains($t->reference ?? '', '-ROOM-'));
 
             if ($isPerRoom) {
+                // Editing dates collapses any prior pricing segments (e.g. from an earlier
+                // extension) into one fresh segment per room for the new full range,
+                // priced at each room's frozen pivot rate — avoids double-counting old
+                // extension transactions alongside the recomputed total.
+                $debitTransactions->each(fn($t) => $t->delete());
+
                 foreach ($reservation->rooms as $room) {
                     $rate      = $room->pivot->rate ?? ($room->type->base_price ?? 0);
                     $roomTotal = $newDays * (float) $rate;
-                    $t = $debitTransactions->first(fn($t) => $t->reference === 'RES-' . $reservation->id . '-ROOM-' . $room->id);
-                    if ($t) {
-                        $t->update(['amount' => $roomTotal, 'transaction_date' => $finalCheckIn]);
-                    }
+                    Transaction::create([
+                        'customer_id'      => $reservation->customer_id,
+                        'reservation_id'   => $reservation->id,
+                        'room_id'          => $room->id,
+                        'type'             => 'debit',
+                        'amount'           => $roomTotal,
+                        'rate'             => $rate,
+                        'nights'           => $newDays,
+                        'check_in_date'    => $finalCheckIn,
+                        'check_out_date'   => $finalCheckOut,
+                        'currency'         => 'SDG',
+                        'transaction_date' => $finalCheckIn,
+                        'reference'        => 'RES-' . $reservation->id . '-ROOM-' . $room->id,
+                        'notes'            => 'غرفة ' . $room->number,
+                    ]);
                 }
             } else {
                 $single = $debitTransactions->first();
@@ -684,11 +736,23 @@ class ReservationController extends Controller
             if ($t) {
                 $t->update([
                     'amount'           => $days * $newRate,
+                    'rate'             => $newRate,
+                    'nights'           => $days,
+                    'room_id'          => $data['new_room_id'],
+                    'check_in_date'    => $ci,
+                    'check_out_date'   => $co,
                     'reference'        => $newRef,
                     'notes'            => "حجز غرفة {$newRoom->number} - وصول {$ci} - مغادرة {$co}",
                     'transaction_date' => $ci,
                 ]);
             }
+
+            // Re-point any other debit transactions tied to the old room (e.g. earlier
+            // extensions) so their history stays attached to the room now occupying them
+            Transaction::where('reservation_id', $reservation->id)
+                ->where('room_id', $data['old_room_id'])
+                ->where('type', 'debit')
+                ->update(['room_id' => $data['new_room_id']]);
 
             // Recalculate reservation total
             $fresh = $reservation->fresh(['rooms.type']);
@@ -1004,11 +1068,154 @@ class ReservationController extends Controller
         // Get room types for pricing
         $roomTypes = RoomType::all()->keyBy('id');
 
+        // Build invoice line items from the reservation's priced debit segments
+        // (original booking + any extensions), so a room whose price changed
+        // mid-stay prints as separate lines at their own frozen rates instead of
+        // one line recomputed from today's live room price.
+        $totalAmount = 0;
+        $roomDetails = [];
+
+        $debitSegments = $reservation->transactions
+            ->where('type', 'debit')
+            ->whereNotNull('room_id')
+            ->sortBy('check_in_date');
+
+        if ($debitSegments->isNotEmpty()) {
+            foreach ($debitSegments as $segment) {
+                $room = $reservation->rooms->firstWhere('id', $segment->room_id);
+                $nights = $segment->nights ?? 1;
+                $rate = $segment->rate ?? ($nights > 0 ? $segment->amount / $nights : $segment->amount);
+                $segCheckIn = $segment->check_in_date
+                    ? date('Y/m/d', strtotime($segment->check_in_date))
+                    : date('Y/m/d', strtotime($reservation->check_in_date));
+                $segCheckOut = $segment->check_out_date
+                    ? date('Y/m/d', strtotime($segment->check_out_date))
+                    : date('Y/m/d', strtotime($reservation->check_out_date));
+
+                $totalAmount += (float) $segment->amount;
+                $roomDetails[] = [
+                    'room_number' => $room ? $room->number : ('#' . $segment->room_id),
+                    'check_in' => $segCheckIn,
+                    'check_out' => $segCheckOut,
+                    'days' => $nights,
+                    'price_per_day' => $rate,
+                    'total' => (float) $segment->amount,
+                ];
+            }
+        } else {
+            // Legacy fallback for reservations created before per-room pricing was tracked
+            $checkIn = new \DateTime($reservation->check_in_date);
+            $checkOut = new \DateTime($reservation->check_out_date);
+            $days = max(1, $checkIn->diff($checkOut)->days);
+            $fallbackCheckIn = date('Y/m/d', strtotime($reservation->check_in_date));
+            $fallbackCheckOut = date('Y/m/d', strtotime($reservation->check_out_date));
+
+            foreach ($reservation->rooms as $room) {
+                $basePrice = ($room->type && $room->type->base_price)
+                    ? $room->type->base_price
+                    : ($roomTypes[$room->room_type_id]->base_price ?? 0);
+                $roomAmount = $days * $basePrice;
+                $totalAmount += $roomAmount;
+                $roomDetails[] = [
+                    'room_number' => $room->number,
+                    'check_in' => $fallbackCheckIn,
+                    'check_out' => $fallbackCheckOut,
+                    'days' => $days,
+                    'price_per_day' => $basePrice,
+                    'total' => $roomAmount
+                ];
+            }
+        }
+
+        return $this->renderReservationInvoicePdf(
+            $reservation,
+            $roomDetails,
+            $totalAmount,
+            'فاتورة رقم (' . $reservation->id . ')',
+            date('d/m/Y', strtotime($reservation->check_in_date)),
+            'invoice_reservation_' . $reservation->id . '_' . date('Y-m-d') . '.pdf'
+        );
+    }
+
+    /**
+     * Invoice for a single extension event only — just the extended nights and
+     * their amount, not the reservation's full booking history. $transaction_id
+     * identifies which extension (a reservation may have been extended more than
+     * once); sibling rooms extended in the same batch (same date range) are
+     * included so a multi-room extension prints as one invoice.
+     */
+    public function exportExtensionInvoicePdf(Request $request, Reservation $reservation): Response|\Illuminate\Http\JsonResponse
+    {
+        $data = $request->validate([
+            'transaction_id' => ['required', 'integer'],
+        ]);
+
+        $reservation->load(['customer', 'rooms.type']);
+
+        $anchorTx = Transaction::where('id', $data['transaction_id'])
+            ->where('reservation_id', $reservation->id)
+            ->where('type', 'debit')
+            ->first();
+
+        if (!$anchorTx) {
+            return response()->json(['message' => 'معاملة التمديد غير موجودة'], 404);
+        }
+
+        $segments = Transaction::where('reservation_id', $reservation->id)
+            ->where('type', 'debit')
+            ->whereNotNull('room_id')
+            ->where('check_in_date', $anchorTx->check_in_date)
+            ->where('check_out_date', $anchorTx->check_out_date)
+            ->get();
+
+        $totalAmount = 0;
+        $roomDetails = [];
+
+        foreach ($segments as $segment) {
+            $room = $reservation->rooms->firstWhere('id', $segment->room_id);
+            $nights = $segment->nights ?? 1;
+            $rate = $segment->rate ?? ($nights > 0 ? $segment->amount / $nights : $segment->amount);
+
+            $totalAmount += (float) $segment->amount;
+            $roomDetails[] = [
+                'room_number' => $room ? $room->number : ('#' . $segment->room_id),
+                'check_in' => $segment->check_in_date ? date('Y/m/d', strtotime($segment->check_in_date)) : '-',
+                'check_out' => $segment->check_out_date ? date('Y/m/d', strtotime($segment->check_out_date)) : '-',
+                'days' => $nights,
+                'price_per_day' => $rate,
+                'total' => (float) $segment->amount,
+            ];
+        }
+
+        return $this->renderReservationInvoicePdf(
+            $reservation,
+            $roomDetails,
+            $totalAmount,
+            'فاتورة تمديد رقم (' . $reservation->id . ')',
+            $anchorTx->check_in_date ? date('d/m/Y', strtotime($anchorTx->check_in_date)) : date('d/m/Y'),
+            'extension_invoice_reservation_' . $reservation->id . '_' . date('Y-m-d') . '.pdf'
+        );
+    }
+
+    /**
+     * Shared invoice PDF renderer used by both the full-reservation invoice and
+     * the single-extension invoice — same visual template, different line items.
+     */
+    private function renderReservationInvoicePdf(
+        Reservation $reservation,
+        array $roomDetails,
+        float $totalAmount,
+        string $invoiceTitle,
+        string $invoiceDate,
+        string $filename
+    ): Response {
+        $guestName = $reservation->customer->name ?? '';
+
         // Create PDF with RTL support
         $pdf = new \TCPDF('P', 'mm', 'A4', true, 'UTF-8', false);
         $pdf->SetCreator('Hotel Management System');
         $pdf->SetAuthor('Hotel Management System');
-        $pdf->SetTitle('فاتورة الحجز #' . $reservation->id);
+        $pdf->SetTitle($invoiceTitle);
         $pdf->SetSubject('Reservation Invoice');
 
         // Remove default header/footer
@@ -1087,153 +1294,99 @@ class ReservationController extends Controller
             }
         }
 
-        // Set font for Arabic text
-        $pdf->SetFont('arial', 'B', 18);
-        $pdf->Cell(0, 10, 'فاتورة الحجز', 0, 1, 'C');
-        $pdf->Ln(5);
+        // Hotel name (from settings), invoice title, date, guest name — matches
+        // the printed-invoice template's title block.
+        $hotelName = ($settings->official_name ?? null) ?: ($settings->trade_name ?? null);
 
-        // Reservation Information
-        $pdf->SetFont('arial', 'B', 12);
-        $pdf->Cell(0, 8, 'معلومات الحجز', 0, 1, 'R');
+        if ($hotelName) {
+            $pdf->SetFont('arial', 'B', 16);
+            $pdf->Cell(0, 9, $hotelName, 0, 1, 'C');
+        }
+
+        $pdf->SetFont('arial', 'B', 14);
+        $pdf->Cell(0, 8, $invoiceTitle, 0, 1, 'C');
+
         $pdf->SetFont('arial', '', 10);
+        $pdf->Cell(0, 7, 'التاريخ: ' . $invoiceDate, 0, 1, 'R');
 
-        $reservationInfo = [
-            'رقم الحجز: #' . $reservation->id,
-            'تاريخ الوصول: ' . date('d/m/Y', strtotime($reservation->check_in_date)),
-            'تاريخ المغادرة: ' . date('d/m/Y', strtotime($reservation->check_out_date)),
-            'عدد الضيوف: ' . ($reservation->guest_count ?? 1),
-        ];
+        $pdf->Ln(3);
 
-        foreach ($reservationInfo as $info) {
-            $pdf->Cell(0, 6, $info, 0, 1, 'R');
-        }
-
-        $pdf->Ln(5);
-
-        // Customer Information
-        $pdf->SetFont('arial', 'B', 12);
-        $pdf->Cell(0, 8, 'بيانات العميل', 0, 1, 'R');
-        $pdf->SetFont('arial', '', 10);
-
-        $customerInfo = [
-            'الاسم: ' . $reservation->customer->name,
-            $reservation->customer->phone ? 'الهاتف: ' . $reservation->customer->phone : null,
-            $reservation->customer->national_id ? 'الرقم الوطني: ' . $reservation->customer->national_id : null,
-        ];
-
-        foreach (array_filter($customerInfo) as $info) {
-            $pdf->Cell(0, 6, $info, 0, 1, 'R');
-        }
-
-        $pdf->Ln(5);
-
-        // Calculate days
-        $checkIn = new \DateTime($reservation->check_in_date);
-        $checkOut = new \DateTime($reservation->check_out_date);
-        $interval = $checkIn->diff($checkOut);
-        $days = max(1, $interval->days);
-
-        // Calculate total amount
-        $totalAmount = 0;
-        $roomDetails = [];
-
-        foreach ($reservation->rooms as $room) {
-            $basePrice = ($room->type && $room->type->base_price)
-                ? $room->type->base_price
-                : ($roomTypes[$room->room_type_id]->base_price ?? 0);
-            $roomAmount = $days * $basePrice;
-            $totalAmount += $roomAmount;
-            $roomDetails[] = [
-                'name' => 'غرفة ' . $room->number,
-                'days' => $days,
-                'price_per_day' => $basePrice,
-                'total' => $roomAmount
-            ];
-        }
-
-        // Invoice Table Header
+        // Invoice Table Header — matches the printed-invoice layout: room number,
+        // check-in/out dates, guest name, nights, nightly rate, then the total.
         $pdf->SetFont('arial', 'B', 10);
         $pdf->SetFillColor(230, 230, 230);
 
-        $colDescription = 80;
-        $colDays = 30;
-        $colPrice = 40;
-        $colTotal = 40;
+        $colRoom = 18;
+        $colCheckIn = 26;
+        $colCheckOut = 26;
+        $colGuest = 42;
+        $colDays = 16;
+        $colPrice = 26;
+        $colTotal = 26;
+        // Total: 18+26+26+42+16+26+26 = 180mm
 
-        $pdf->Cell($colDescription, 8, 'الوصف', 1, 0, 'C', true);
+        $pdf->Cell($colRoom, 8, 'رقم الشقة', 1, 0, 'C', true);
+        $pdf->Cell($colCheckIn, 8, 'تاريخ الوصول', 1, 0, 'C', true);
+        $pdf->Cell($colCheckOut, 8, 'تاريخ المغادرة', 1, 0, 'C', true);
+        $pdf->Cell($colGuest, 8, 'اسم العميل', 1, 0, 'C', true);
         $pdf->Cell($colDays, 8, 'عدد الأيام', 1, 0, 'C', true);
-        $pdf->Cell($colPrice, 8, 'السعر/يوم', 1, 0, 'C', true);
+        $pdf->Cell($colPrice, 8, 'سعر اليوم', 1, 0, 'C', true);
         $pdf->Cell($colTotal, 8, 'الإجمالي', 1, 1, 'C', true);
 
         // Invoice Items
         $pdf->SetFont('arial', '', 9);
         foreach ($roomDetails as $room) {
-            $pdf->Cell($colDescription, 7, $room['name'], 1, 0, 'R');
+            $pdf->Cell($colRoom, 7, $room['room_number'], 1, 0, 'C');
+            $pdf->Cell($colCheckIn, 7, $room['check_in'], 1, 0, 'C');
+            $pdf->Cell($colCheckOut, 7, $room['check_out'], 1, 0, 'C');
+            $pdf->Cell($colGuest, 7, $guestName, 1, 0, 'C');
             $pdf->Cell($colDays, 7, $room['days'], 1, 0, 'C');
-            $pdf->Cell($colPrice, 7, number_format($room['price_per_day'], 0, '.', ','), 1, 0, 'C');
-            $pdf->Cell($colTotal, 7, number_format($room['total'], 0, '.', ','), 1, 1, 'C');
+            $pdf->Cell($colPrice, 7, number_format($room['price_per_day'], 0, '.', '.'), 1, 0, 'C');
+            $pdf->Cell($colTotal, 7, number_format($room['total'], 0, '.', '.'), 1, 1, 'C');
         }
 
         // Total Row
         $pdf->SetFont('arial', 'B', 10);
         $pdf->SetFillColor(240, 240, 240);
-        $totalColSpan = $colDescription + $colDays + $colPrice;
-        $pdf->Cell($totalColSpan, 8, 'الإجمالي', 1, 0, 'R', true);
-        $pdf->Cell($colTotal, 8, number_format($totalAmount, 0, '.', ','), 1, 1, 'C', true);
+        $totalColSpan = $colRoom + $colCheckIn + $colCheckOut + $colGuest + $colDays + $colPrice;
+        $pdf->Cell($totalColSpan, 8, 'الجملة', 1, 0, 'R', true);
+        $pdf->Cell($colTotal, 8, number_format($totalAmount, 0, '.', '.'), 1, 1, 'C', true);
 
-        // Calculate paid amount from credit transactions
-        $paidAmount = $reservation->transactions()
-            ->where('type', 'credit')
-            ->sum('amount');
-        $remainingAmount = $totalAmount - $paidAmount;
+        // Bank account info — a distinct highlighted box below the table (not
+        // styled like the totals table, so it doesn't read as another line item).
+        $hasBank1 = $settings && $settings->bank_account_number_1;
+        $hasBank2 = $settings && $settings->bank_account_number_2;
 
-        // Bank account info (before payment summary)
-        $bankLines = [];
-        if ($settings && $settings->bank_account_number_1) {
-            $line = 'يرجى سداد المبلغ في حساب الفندق';
-            if ($settings->bank_name_1) {
-                $line .= ' ' . $settings->bank_name_1;
-            }
-            $line .= ' رقم الحساب: ' . $settings->bank_account_number_1;
-            if ($settings->bank_account_name_1) {
-                $line .= ' باسم: ' . $settings->bank_account_name_1;
-            }
-            $bankLines[] = $line;
-        }
-        if ($settings && $settings->bank_account_number_2) {
-            $line = 'او في حساب';
-            if ($settings->bank_name_2) {
-                $line .= ' ' . $settings->bank_name_2;
-            }
-            $line .= ' رقم: ' . $settings->bank_account_number_2;
-            if ($settings->bank_account_name_2) {
-                $line .= ' باسم: ' . $settings->bank_account_name_2;
-            }
-            $bankLines[] = $line;
-        }
-        if (!empty($bankLines)) {
-            $pdf->Ln(5);
+        if ($hasBank1 || $hasBank2) {
+            $pdf->Ln(6);
+
             $pdf->SetFont('arial', 'B', 10);
-            foreach ($bankLines as $line) {
-                $pdf->Cell(0, 7, $line, 0, 1, 'R');
+            $pdf->SetFillColor(255, 248, 225);
+            $pdf->SetTextColor(0, 0, 0);
+            $pdf->SetDrawColor(210, 170, 70);
+
+            if ($hasBank1) {
+                $line = 'رقم الحساب: ' . $settings->bank_account_number_1;
+                if ($settings->bank_account_name_1) {
+                    $line .= '   -   الاسم: ' . $settings->bank_account_name_1;
+                }
+                if ($settings->bank_name_1) {
+                    $line .= '   -   ' . $settings->bank_name_1;
+                }
+                $pdf->Cell(0, 8, $line, 1, 1, 'R', true);
             }
-        }
+            if ($hasBank2) {
+                $line = 'رقم الحساب: ' . $settings->bank_account_number_2;
+                if ($settings->bank_account_name_2) {
+                    $line .= '   -   الاسم: ' . $settings->bank_account_name_2;
+                }
+                if ($settings->bank_name_2) {
+                    $line .= '   -   ' . $settings->bank_name_2;
+                }
+                $pdf->Cell(0, 8, $line, 1, 1, 'R', true);
+            }
 
-        $pdf->Ln(5);
-
-        // Payment Summary
-        $pdf->SetFont('arial', 'B', 12);
-        $pdf->Cell(0, 8, 'ملخص الدفع', 0, 1, 'R');
-        $pdf->SetFont('arial', '', 10);
-
-        $paymentInfo = [
-            'المبلغ الإجمالي: ' . number_format($totalAmount, 0, '.', ',') . ' ',
-            'المبلغ المدفوع: ' . number_format($paidAmount, 0, '.', ',') . ' ',
-            'المبلغ المتبقي: ' . number_format($remainingAmount, 0, '.', ',') . ' ',
-        ];
-
-        foreach ($paymentInfo as $info) {
-            $pdf->Cell(0, 6, $info, 0, 1, 'R');
+            $pdf->SetDrawColor(0, 0, 0);
         }
 
         $pdf->SetAutoPageBreak(false);
@@ -1309,7 +1462,6 @@ class ReservationController extends Controller
         $pdf->SetAutoPageBreak(true, $bottomMargin);
 
         // Generate PDF and return as response
-        $filename = 'invoice_reservation_' . $reservation->id . '_' . date('Y-m-d') . '.pdf';
         return response($pdf->Output($filename, 'S'), 200)
             ->header('Content-Type', 'application/pdf')
             ->header('Content-Disposition', 'attachment; filename="' . $filename . '"');
