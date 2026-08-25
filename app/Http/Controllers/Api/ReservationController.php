@@ -99,6 +99,11 @@ class ReservationController extends Controller
         // Order by ID descending
         $query->orderBy('id', 'desc');
 
+        // Allow callers to request the full, unpaginated result set
+        if ($request->get('per_page') === 'all') {
+            return response()->json($query->get());
+        }
+
         // Get pagination per page (default 20, max 100)
         $perPage = min($request->get('per_page', 20), 100);
 
