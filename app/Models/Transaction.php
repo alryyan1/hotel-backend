@@ -5,9 +5,12 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use App\Models\ReservationService;
+use App\Models\Concerns\BelongsToShift;
 
 class Transaction extends Model
 {
+    use BelongsToShift;
+
     protected $fillable = [
         'customer_id',
         'reservation_id',

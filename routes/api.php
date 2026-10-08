@@ -46,7 +46,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::apiResource('users', \App\Http\Controllers\Api\UserController::class);
     Route::apiResource('services', \App\Http\Controllers\Api\ServiceController::class);
     Route::get('reservation-services/{reservationService}/pdf', [\App\Http\Controllers\Api\ReservationServiceController::class, 'exportPdf']);
-    Route::apiResource('reservation-services', \App\Http\Controllers\Api\ReservationServiceController::class);
+    Route::apiResource('reservation-services', \App\Http\Controllers\Api\ReservationServiceController::class)
+        ->middlewareFor(['store', 'update', 'destroy'], 'shift.open');
 
     // Availability
     Route::get('availability', [\App\Http\Controllers\Api\AvailabilityController::class, 'search']);
@@ -54,7 +55,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // Reservation workflow
     Route::post('reservations/{reservation}/confirm', [\App\Http\Controllers\Api\ReservationController::class, 'confirm']);
     Route::post('reservations/{reservation}/check-in', [\App\Http\Controllers\Api\ReservationController::class, 'checkIn']);
-    Route::post('reservations/{reservation}/check-out', [\App\Http\Controllers\Api\ReservationController::class, 'checkOut']);
+    Route::post('reservations/{reservation}/check-out', [\App\Http\Controllers\Api\ReservationController::class, 'checkOut'])->middleware('shift.open');
     Route::post('reservations/{reservation}/cancel', [\App\Http\Controllers\Api\ReservationController::class, 'cancel']);
     Route::post('reservations/{reservation}/extend', [\App\Http\Controllers\Api\ReservationController::class, 'extend']);
     Route::post('reservations/{reservation}/update-dates', [\App\Http\Controllers\Api\ReservationController::class, 'updateDates']);
@@ -74,7 +75,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('payments/{payment}/invoice/pdf', [\App\Http\Controllers\Api\PaymentController::class, 'exportInvoicePdf']);
 
     // Transactions
-    Route::apiResource('transactions', \App\Http\Controllers\Api\TransactionController::class);
+    Route::apiResource('transactions', \App\Http\Controllers\Api\TransactionController::class)
+        ->middlewareFor(['store', 'update', 'destroy'], 'shift.open');
     Route::get('customers/{customer}/transactions', [\App\Http\Controllers\Api\TransactionController::class, 'getCustomerTransactions']);
     Route::get('transactions/{transaction}/invoice/pdf', [\App\Http\Controllers\Api\TransactionController::class, 'exportInvoicePdf']);
 
@@ -94,7 +96,8 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // Costs
     Route::get('costs/export/excel', [\App\Http\Controllers\Api\CostController::class, 'exportExcel']);
-    Route::apiResource('costs', \App\Http\Controllers\Api\CostController::class);
+    Route::apiResource('costs', \App\Http\Controllers\Api\CostController::class)
+        ->middlewareFor(['store', 'update', 'destroy'], 'shift.open');
 
     // Cost Categories
     Route::apiResource('cost-categories', \App\Http\Controllers\Api\CostCategoryController::class);
@@ -128,6 +131,14 @@ Route::middleware('auth:sanctum')->group(function () {
     // Contest Participants
     Route::get('contest-participants', [\App\Http\Controllers\ContestController::class, 'index']);
     Route::post('contest-draw', [\App\Http\Controllers\ContestController::class, 'draw']);
+
+    // Shifts
+    Route::get('shifts/current', [\App\Http\Controllers\Api\ShiftController::class, 'current']);
+    Route::post('shifts/open', [\App\Http\Controllers\Api\ShiftController::class, 'open']);
+    Route::post('shifts/{shift}/close', [\App\Http\Controllers\Api\ShiftController::class, 'close']);
+    Route::get('shifts/{shift}/pdf', [\App\Http\Controllers\Api\ShiftController::class, 'exportPdf']);
+    Route::get('shifts', [\App\Http\Controllers\Api\ShiftController::class, 'index']);
+    Route::get('shifts/{shift}', [\App\Http\Controllers\Api\ShiftController::class, 'show']);
 
     // Accounting
     Route::get('accounting/summary', [\App\Http\Controllers\Api\AccountingController::class, 'getSummary']);

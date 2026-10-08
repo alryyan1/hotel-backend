@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use App\Models\Concerns\BelongsToShift;
 
 /**
  * @property int $id
@@ -34,6 +35,8 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  */
 class Cost extends Model
 {
+    use BelongsToShift;
+
     protected $fillable = [
         'description',
         'amount',
