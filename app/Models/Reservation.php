@@ -13,11 +13,10 @@ use App\Models\Transaction;
  * @property int $customer_id
  * @property string $check_in_date
  * @property string $check_out_date
- * @property int $guest_count
+ * @property string $currency
  * @property string $status
  * @property numeric $total_amount
  * @property numeric $paid_amount
- * @property string|null $notes
  * @property \Illuminate\Support\Carbon|null $created_at
  * @property \Illuminate\Support\Carbon|null $updated_at
  * @property-read \App\Models\Customer $customer
@@ -32,9 +31,7 @@ use App\Models\Transaction;
  * @method static \Illuminate\Database\Eloquent\Builder<static>|Reservation whereCheckOutDate($value)
  * @method static \Illuminate\Database\Eloquent\Builder<static>|Reservation whereCreatedAt($value)
  * @method static \Illuminate\Database\Eloquent\Builder<static>|Reservation whereCustomerId($value)
- * @method static \Illuminate\Database\Eloquent\Builder<static>|Reservation whereGuestCount($value)
  * @method static \Illuminate\Database\Eloquent\Builder<static>|Reservation whereId($value)
- * @method static \Illuminate\Database\Eloquent\Builder<static>|Reservation whereNotes($value)
  * @method static \Illuminate\Database\Eloquent\Builder<static>|Reservation wherePaidAmount($value)
  * @method static \Illuminate\Database\Eloquent\Builder<static>|Reservation whereStatus($value)
  * @method static \Illuminate\Database\Eloquent\Builder<static>|Reservation whereTotalAmount($value)
@@ -47,11 +44,10 @@ class Reservation extends Model
         'customer_id',
         'check_in_date',
         'check_out_date',
-        'guest_count',
+        'currency',
         'status',
         'total_amount',
         'paid_amount',
-        'notes',
     ];
 
     public function customer(): BelongsTo

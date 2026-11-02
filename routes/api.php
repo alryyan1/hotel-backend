@@ -37,7 +37,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::apiResource('room-statuses', \App\Http\Controllers\Api\RoomStatusController::class);
     Route::get('rooms/all', [\App\Http\Controllers\Api\RoomController::class, 'all']);
     Route::apiResource('rooms', \App\Http\Controllers\Api\RoomController::class);
-    Route::apiResource('reservations', \App\Http\Controllers\Api\ReservationController::class);
+    Route::apiResource('reservations', \App\Http\Controllers\Api\ReservationController::class)
+        ->middlewareFor(['store', 'update', 'destroy'], 'shift.open');
     Route::get('customers/all', [\App\Http\Controllers\Api\CustomerController::class, 'fetchAll']);
     Route::get('customers/trashed', [\App\Http\Controllers\Api\CustomerController::class, 'trashed']);
     Route::post('customers/{id}/restore', [\App\Http\Controllers\Api\CustomerController::class, 'restore']);
@@ -57,9 +58,9 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('reservations/{reservation}/check-in', [\App\Http\Controllers\Api\ReservationController::class, 'checkIn']);
     Route::post('reservations/{reservation}/check-out', [\App\Http\Controllers\Api\ReservationController::class, 'checkOut'])->middleware('shift.open');
     Route::post('reservations/{reservation}/cancel', [\App\Http\Controllers\Api\ReservationController::class, 'cancel']);
-    Route::post('reservations/{reservation}/extend', [\App\Http\Controllers\Api\ReservationController::class, 'extend']);
-    Route::post('reservations/{reservation}/update-dates', [\App\Http\Controllers\Api\ReservationController::class, 'updateDates']);
-    Route::post('reservations/{reservation}/transfer-room', [\App\Http\Controllers\Api\ReservationController::class, 'transferRoom']);
+    Route::post('reservations/{reservation}/extend', [\App\Http\Controllers\Api\ReservationController::class, 'extend'])->middleware('shift.open');
+    Route::post('reservations/{reservation}/update-dates', [\App\Http\Controllers\Api\ReservationController::class, 'updateDates'])->middleware('shift.open');
+    Route::post('reservations/{reservation}/transfer-room', [\App\Http\Controllers\Api\ReservationController::class, 'transferRoom'])->middleware('shift.open');
     Route::get('reservations/export/excel', [\App\Http\Controllers\Api\ReservationController::class, 'exportExcel']);
     Route::get('reservations/{reservation}/invoice/pdf', [\App\Http\Controllers\Api\ReservationController::class, 'exportInvoicePdf']);
     Route::get('reservations/{reservation}/extension-invoice/pdf', [\App\Http\Controllers\Api\ReservationController::class, 'exportExtensionInvoicePdf']);

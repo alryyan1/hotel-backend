@@ -3,7 +3,6 @@
 namespace App\Console\Commands;
 
 use App\Models\Reservation;
-use App\Models\RoomType;
 use App\Models\Transaction;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
@@ -30,13 +29,12 @@ class MigrateReservationTransactions extends Command
         $bar = $this->output->createProgressBar($reservationIds->count());
         $bar->start();
 
-        $roomTypes = RoomType::all()->keyBy('id');
         $migrated  = 0;
         $skipped   = 0;
 
         foreach ($reservationIds as $reservationId) {
             try {
-                DB::transaction(function () use ($reservationId, $roomTypes, &$migrated, &$skipped) {
+                DB::transaction(function () use ($reservationId, &$migrated, &$skipped) {
                     $reservation = Reservation::with('rooms.type')->find($reservationId);
 
                     if (! $reservation || $reservation->rooms->isEmpty()) {
@@ -61,11 +59,7 @@ class MigrateReservationTransactions extends Command
                     $totalAmount = 0;
 
                     foreach ($reservation->rooms as $room) {
-                        $basePrice = $room->pivot->rate ?? (
-                            ($room->type && $room->type->base_price)
-                            ? $room->type->base_price
-                            : ($roomTypes[$room->room_type_id]->base_price ?? 0)
-                        );
+                        $basePrice = $room->pivot->rate ?? $room->priceFor($reservation->currency);
                         $roomAmount   = $days * (float) $basePrice;
                         $totalAmount += $roomAmount;
 

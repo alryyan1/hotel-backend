@@ -84,9 +84,10 @@ class RoomController extends Controller
                 'number' => 'required|string|max:10|unique:rooms,number',
                 'floor_id' => 'required|exists:floors,id',
                 'room_type_id' => 'required|exists:room_types,id',
+                'price_usd' => 'required|numeric|min:0',
+                'price_sdg' => 'required|numeric|min:0',
                 'room_status_id' => 'required|exists:room_statuses,id',
                 'beds' => 'required|integer|min:1|max:10',
-                'notes' => 'nullable|string|max:1000',
             ]);
 
             $room = Room::create($validated);
@@ -120,9 +121,10 @@ class RoomController extends Controller
                 'number' => 'required|string|max:10|unique:rooms,number,' . $room->id,
                 'floor_id' => 'required|exists:floors,id',
                 'room_type_id' => 'required|exists:room_types,id',
+                'price_usd' => 'required|numeric|min:0',
+                'price_sdg' => 'required|numeric|min:0',
                 'room_status_id' => 'required|exists:room_statuses,id',
                 'beds' => 'required|integer|min:1|max:10',
-                'notes' => 'nullable|string|max:1000',
             ]);
 
             $room->update($validated);

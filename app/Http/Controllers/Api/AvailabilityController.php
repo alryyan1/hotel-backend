@@ -28,10 +28,7 @@ class AvailabilityController extends Controller
                   ->with('customer:id,name')
                   ->orderBy('check_out_date', 'desc');
             }])
-            ->when(isset($data['room_type_id']), fn($q) => $q->where('room_type_id', $data['room_type_id']))
-            ->when(isset($data['guest_count']), fn($q) => $q->whereHas('type', function ($t) use ($data) {
-                $t->where('capacity', '>=', $data['guest_count']);
-            }));
+            ->when(isset($data['room_type_id']), fn($q) => $q->where('room_type_id', $data['room_type_id']));
 
         $rooms = $query->get();
 
@@ -43,11 +40,11 @@ class AvailabilityController extends Controller
                 ->first();
 
             $isOccupied = $currentReservation !== null;
-            
-            // Get room rate (from pivot if exists, otherwise use base_price)
-            $basePrice = $room->type->base_price ?? 0;
-            $rate = $basePrice; // Default to base_price, can be overridden by pivot rate if needed
-            $totalPrice = $rate * $days;
+
+            // No currency is chosen yet at search time, so surface both rates
+            // and let the reservation-creation step pick one for the whole bill.
+            $priceUsd = $room->price_usd ?? 0;
+            $priceSdg = $room->price_sdg ?? 0;
 
             $roomData = [
                 'id' => $room->id,
@@ -56,9 +53,10 @@ class AvailabilityController extends Controller
                 'floor' => $room->floor,
                 'status' => $room->status,
                 'is_occupied' => $isOccupied,
-                'base_price' => $basePrice,
-                'rate' => $rate,
-                'total_price' => $totalPrice,
+                'price_usd' => $priceUsd,
+                'price_sdg' => $priceSdg,
+                'total_price_usd' => $priceUsd * $days,
+                'total_price_sdg' => $priceSdg * $days,
                 'current_reservation' => null,
             ];
 

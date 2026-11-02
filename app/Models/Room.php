@@ -11,9 +11,10 @@ use Illuminate\Database\Eloquent\Relations\BelongsToMany;
  * @property string $number
  * @property int $floor_id
  * @property int $room_type_id
+ * @property float $price_usd
+ * @property float $price_sdg
  * @property int $room_status_id
  * @property int $beds
- * @property string|null $notes
  * @property \Illuminate\Support\Carbon|null $created_at
  * @property \Illuminate\Support\Carbon|null $updated_at
  * @property-read \App\Models\Floor $floor
@@ -28,7 +29,6 @@ use Illuminate\Database\Eloquent\Relations\BelongsToMany;
  * @method static \Illuminate\Database\Eloquent\Builder<static>|Room whereCreatedAt($value)
  * @method static \Illuminate\Database\Eloquent\Builder<static>|Room whereFloorId($value)
  * @method static \Illuminate\Database\Eloquent\Builder<static>|Room whereId($value)
- * @method static \Illuminate\Database\Eloquent\Builder<static>|Room whereNotes($value)
  * @method static \Illuminate\Database\Eloquent\Builder<static>|Room whereNumber($value)
  * @method static \Illuminate\Database\Eloquent\Builder<static>|Room whereRoomStatusId($value)
  * @method static \Illuminate\Database\Eloquent\Builder<static>|Room whereRoomTypeId($value)
@@ -41,10 +41,24 @@ class Room extends Model
         'number',
         'floor_id',
         'room_type_id',
+        'price_usd',
+        'price_sdg',
         'room_status_id',
         'beds',
-        'notes',
     ];
+
+    protected $casts = [
+        // MySQL decimal columns come back from PDO as strings; cast to float so
+        // JSON responses serialize prices as numbers instead of strings.
+        'price_usd' => 'float',
+        'price_sdg' => 'float',
+    ];
+
+    /** The room's nightly rate in the given currency ('USD' or 'SDG'). */
+    public function priceFor(string $currency): float
+    {
+        return $currency === 'USD' ? ($this->price_usd ?? 0) : ($this->price_sdg ?? 0);
+    }
 
     public function floor(): BelongsTo
     {

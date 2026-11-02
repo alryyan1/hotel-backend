@@ -21,7 +21,6 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
 use App\Models\HotelSetting;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Http\Response;
-use App\Models\RoomType;
 
 class ReservationController extends Controller
 {
@@ -120,64 +119,63 @@ class ReservationController extends Controller
             'customer_id' => ['required', 'exists:customers,id'],
             'check_in_date' => ['required', 'date'],
             'check_out_date' => ['required', 'date', 'after:check_in_date'],
-            'guest_count' => ['nullable', 'integer', 'min:1'],
+            'currency' => ['nullable', Rule::in(['USD', 'SDG'])],
             'status' => ['nullable', Rule::in(['pending', 'confirmed', 'checked_in', 'checked_out', 'cancelled'])],
-            'notes' => ['nullable', 'string'],
             'rooms' => ['required', 'array', 'min:1'],
             'rooms.*.id' => ['required', 'exists:rooms,id'],
             'rooms.*.check_in_date' => ['nullable', 'date'],
-            'rooms.*.check_out_date' => ['nullable', 'date', 'after_or_equal:rooms.*.check_in_date'],
+            'rooms.*.check_out_date' => ['nullable', 'date', 'after:rooms.*.check_in_date'],
             'rooms.*.rate' => ['nullable', 'numeric', 'min:0'],
-            'rooms.*.currency' => ['nullable', 'string', 'size:3'],
         ]);
 
+        // The whole reservation bills in a single currency, fixed at booking time.
+        $currency = $data['currency'] ?? 'SDG';
+
         // Check overlap for each requested room
-        // foreach ($data['rooms'] as $roomReq) {
-        //     $overlap = Reservation::query()
-        //         ->whereHas('rooms', function ($q) use ($roomReq, $data) {
-        //             $q->where('rooms.id', $roomReq['id'])
-        //               ->where(function($p) use ($roomReq, $data) {
-        //                   $ci = $roomReq['check_in_date'] ?? $data['check_in_date'];
-        //                   $co = $roomReq['check_out_date'] ?? $data['check_out_date'];
-        //                   $p->where(function($x) use ($ci, $co) {
-        //                       $x->where('reservation_room.check_in_date', '<', $co)
-        //                         ->where('reservation_room.check_out_date', '>', $ci);
-        //                   })->orWhere(function($x) use ($ci, $co) {
-        //                       $x->whereNull('reservation_room.check_in_date')
-        //                         ->whereNull('reservation_room.check_out_date')
-        //                         ->where('reservations.check_in_date', '<', $co)
-        //                         ->where('reservations.check_out_date', '>', $ci);
-        //                   });
-        //               });
-        //         })->where('reservations.status', '!=', 'cancelled')
-        //         ->exists();
-        //     if ($overlap) {
-        //         return response()->json(['message' => 'Room not available for selected period','room_id' => $roomReq['id']], 422);
-        //     }
-        // }
+        foreach ($data['rooms'] as $roomReq) {
+            $overlap = Reservation::query()
+                ->whereHas('rooms', function ($q) use ($roomReq, $data) {
+                    $q->where('rooms.id', $roomReq['id'])
+                      ->where(function($p) use ($roomReq, $data) {
+                          $ci = $roomReq['check_in_date'] ?? $data['check_in_date'];
+                          $co = $roomReq['check_out_date'] ?? $data['check_out_date'];
+                          $p->where(function($x) use ($ci, $co) {
+                              $x->where('reservation_room.check_in_date', '<', $co)
+                                ->where('reservation_room.check_out_date', '>', $ci);
+                          })->orWhere(function($x) use ($ci, $co) {
+                              $x->whereNull('reservation_room.check_in_date')
+                                ->whereNull('reservation_room.check_out_date')
+                                ->where('reservations.check_in_date', '<', $co)
+                                ->where('reservations.check_out_date', '>', $ci);
+                          });
+                      });
+                })->where('reservations.status', '!=', 'cancelled')
+                ->exists();
+            if ($overlap) {
+                return response()->json(['message' => 'Room not available for selected period','room_id' => $roomReq['id']], 422);
+            }
+        }
 
         $reservation = Reservation::create([
             'customer_id' => $data['customer_id'],
             'check_in_date' => $data['check_in_date'],
             'check_out_date' => $data['check_out_date'],
-            'guest_count' => $data['guest_count'] ?? 1,
+            'currency' => $currency,
             'status' => $data['status'] ?? 'pending',
-            'notes' => $data['notes'] ?? null,
         ]);
 
-        $roomTypesForSync = RoomType::all()->keyBy('id');
         $roomsById = \App\Models\Room::whereIn('id', collect($data['rooms'])->pluck('id'))->get()->keyBy('id');
 
-        $syncData = collect($data['rooms'])->mapWithKeys(function ($room) use ($data, $roomTypesForSync, $roomsById) {
+        $syncData = collect($data['rooms'])->mapWithKeys(function ($room) use ($data, $roomsById, $currency) {
             $roomModel = $roomsById[$room['id']] ?? null;
-            $frozenRate = $room['rate'] ?? ($roomModel ? ($roomTypesForSync[$roomModel->room_type_id]->base_price ?? 0) : 0);
+            $frozenRate = $room['rate'] ?? ($roomModel ? $roomModel->priceFor($currency) : 0);
 
             return [
                 $room['id'] => [
                     'check_in_date' => $room['check_in_date'] ?? $data['check_in_date'],
                     'check_out_date' => $room['check_out_date'] ?? $data['check_out_date'],
                     'rate' => $frozenRate,
-                    'currency' => $room['currency'] ?? 'SDG',
+                    'currency' => $currency,
                 ],
             ];
         })->toArray();
@@ -186,7 +184,6 @@ class ReservationController extends Controller
 
         // Create one debit transaction per room, freezing the price used at booking time
         $reservation->load(['rooms.type']);
-        $roomTypes = RoomType::all()->keyBy('id');
 
         $totalDebit = 0;
         foreach ($reservation->rooms as $room) {
@@ -194,11 +191,7 @@ class ReservationController extends Controller
             $roomCheckOut = $room->pivot->check_out_date ?? $reservation->check_out_date;
             $days = max(1, (new \DateTime($roomCheckIn))->diff(new \DateTime($roomCheckOut))->days);
 
-            $basePrice = $room->pivot->rate ?? (
-                ($room->type && $room->type->base_price)
-                ? $room->type->base_price
-                : ($roomTypes[$room->room_type_id]->base_price ?? 0)
-            );
+            $basePrice = $room->pivot->rate ?? $room->priceFor($currency);
             $roomAmount = $days * $basePrice;
             $totalDebit += $roomAmount;
 
@@ -212,7 +205,7 @@ class ReservationController extends Controller
                 'nights'           => $days,
                 'check_in_date'    => $roomCheckIn,
                 'check_out_date'   => $roomCheckOut,
-                'currency'         => 'SDG',
+                'currency'         => $currency,
                 'transaction_date' => $reservation->check_in_date,
                 'reference'        => 'RES-' . $reservation->id . '-ROOM-' . $room->id,
                 'notes'            => 'غرفة ' . $room->number,
@@ -241,15 +234,12 @@ class ReservationController extends Controller
             'customer_id' => ['sometimes', 'exists:customers,id'],
             'check_in_date' => ['sometimes', 'date'],
             'check_out_date' => ['sometimes', 'date', 'after:check_in_date'],
-            'guest_count' => ['sometimes', 'integer', 'min:1'],
             'status' => ['sometimes', Rule::in(['pending', 'confirmed', 'checked_in', 'checked_out', 'cancelled'])],
-            'notes' => ['sometimes', 'string'],
             'rooms' => ['sometimes', 'array', 'min:1'],
             'rooms.*.id' => ['required_with:rooms', 'exists:rooms,id'],
             'rooms.*.check_in_date' => ['nullable', 'date'],
-            'rooms.*.check_out_date' => ['nullable', 'date', 'after_or_equal:rooms.*.check_in_date'],
+            'rooms.*.check_out_date' => ['nullable', 'date', 'after:rooms.*.check_in_date'],
             'rooms.*.rate' => ['nullable', 'numeric', 'min:0'],
-            'rooms.*.currency' => ['nullable', 'string', 'size:3'],
         ]);
 
         // If dates or rooms changed, re-validate overlaps
@@ -286,20 +276,19 @@ class ReservationController extends Controller
         $reservation->update($data);
 
         if (isset($data['rooms'])) {
-            $roomTypesForSync = RoomType::all()->keyBy('id');
             $roomsById = \App\Models\Room::whereIn('id', collect($data['rooms'])->pluck('id'))->get()->keyBy('id');
 
-            $syncData = collect($data['rooms'])->mapWithKeys(function ($room) use ($data, $reservation, $roomTypesForSync, $roomsById) {
+            $syncData = collect($data['rooms'])->mapWithKeys(function ($room) use ($data, $reservation, $roomsById) {
                 $ciBase = $data['check_in_date'] ?? $reservation->check_in_date;
                 $coBase = $data['check_out_date'] ?? $reservation->check_out_date;
                 $roomModel = $roomsById[$room['id']] ?? null;
-                $frozenRate = $room['rate'] ?? ($roomModel ? ($roomTypesForSync[$roomModel->room_type_id]->base_price ?? 0) : 0);
+                $frozenRate = $room['rate'] ?? ($roomModel ? $roomModel->priceFor($reservation->currency) : 0);
                 return [
                     $room['id'] => [
                         'check_in_date' => $room['check_in_date'] ?? $ciBase,
                         'check_out_date' => $room['check_out_date'] ?? $coBase,
                         'rate' => $frozenRate,
-                        'currency' => $room['currency'] ?? 'SDG',
+                        'currency' => $reservation->currency,
                     ],
                 ];
             })->toArray();
@@ -428,7 +417,7 @@ class ReservationController extends Controller
                     ->orderByDesc('id')
                     ->first();
 
-                $rate = $latestSegment?->rate ?? $room->pivot->rate ?? ($room->type->base_price ?? 0);
+                $rate = $latestSegment?->rate ?? $room->pivot->rate ?? $room->priceFor($reservation->currency);
                 $refundAmount += $remainingDays * (float) $rate;
             }
         }
@@ -455,7 +444,7 @@ class ReservationController extends Controller
                         'reservation_id' => $reservation->id,
                         'type' => 'refund',
                         'amount' => $refundAmount,
-                        'currency' => 'SDG',
+                        'currency' => $reservation->currency,
                         'method' => request('refund_method', 'cash'),
                         'transaction_date' => $today,
                         'notes' => 'مغادرة مبكرة - استرجاع ' . $remainingDays . ' يوم (الموعد الأصلي: ' . $scheduledCheckOut . ')',
@@ -481,6 +470,10 @@ class ReservationController extends Controller
 
     public function extend(Request $request, Reservation $reservation)
     {
+        if (in_array($reservation->status, ['cancelled', 'checked_out'])) {
+            return response()->json(['message' => 'Cannot extend a cancelled or checked-out reservation'], 422);
+        }
+
         $data = $request->validate([
             'check_out_date' => ['required', 'date', 'after:' . $reservation->check_out_date],
         ]);
@@ -516,7 +509,6 @@ class ReservationController extends Controller
         }
 
         // Calculate extra cost
-        $roomTypes = RoomType::all()->keyBy('id');
         $oldDate = new \DateTime($oldCheckOut);
         $newDate = new \DateTime($newCheckOut);
         $interval = $oldDate->diff($newDate);
@@ -533,9 +525,7 @@ class ReservationController extends Controller
         $extraAmount = 0;
         $roomRates = [];
         foreach ($reservation->rooms as $room) {
-            $basePrice = ($room->type && $room->type->base_price)
-                ? $room->type->base_price
-                : ($roomTypes[$room->room_type_id]->base_price ?? 0);
+            $basePrice = $room->priceFor($reservation->currency);
             $roomRates[$room->id] = $basePrice;
             $extraAmount += $extraDays * $basePrice;
         }
@@ -564,7 +554,7 @@ class ReservationController extends Controller
                         'nights' => $extraDays,
                         'check_in_date' => $oldCheckOut,
                         'check_out_date' => $newCheckOut,
-                        'currency' => 'SDG',
+                        'currency' => $reservation->currency,
                         'transaction_date' => now(),
                         'reference' => 'EXT-' . $reservation->id . '-ROOM-' . $room->id . '-' . time(),
                         'notes' => 'غرفة ' . $room->number,
@@ -608,7 +598,7 @@ class ReservationController extends Controller
         $reservation->load(['rooms.type']);
         $pricePerDay = 0;
         foreach ($reservation->rooms as $room) {
-            $rate = $room->pivot->rate ?? ($room->type->base_price ?? 0);
+            $rate = $room->pivot->rate ?? $room->priceFor($reservation->currency);
             $pricePerDay += (float) $rate;
         }
         $newTotal = $newDays * $pricePerDay;
@@ -641,7 +631,7 @@ class ReservationController extends Controller
                 $debitTransactions->each(fn($t) => $t->delete());
 
                 foreach ($reservation->rooms as $room) {
-                    $rate      = $room->pivot->rate ?? ($room->type->base_price ?? 0);
+                    $rate      = $room->pivot->rate ?? $room->priceFor($reservation->currency);
                     $roomTotal = $newDays * (float) $rate;
                     Transaction::create([
                         'customer_id'      => $reservation->customer_id,
@@ -653,7 +643,7 @@ class ReservationController extends Controller
                         'nights'           => $newDays,
                         'check_in_date'    => $finalCheckIn,
                         'check_out_date'   => $finalCheckOut,
-                        'currency'         => 'SDG',
+                        'currency'         => $reservation->currency,
                         'transaction_date' => $finalCheckIn,
                         'reference'        => 'RES-' . $reservation->id . '-ROOM-' . $room->id,
                         'notes'            => 'غرفة ' . $room->number,
@@ -719,7 +709,7 @@ class ReservationController extends Controller
 
         DB::transaction(function () use ($reservation, $newRoom, $ci, $co, $data) {
             $days    = max(1, (new \DateTime($ci))->diff(new \DateTime($co))->days);
-            $newRate = (float) ($newRoom->type->base_price ?? 0);
+            $newRate = (float) $newRoom->priceFor($reservation->currency);
 
             // Swap rooms in pivot
             $reservation->rooms()->detach($data['old_room_id']);
@@ -727,7 +717,7 @@ class ReservationController extends Controller
                 'check_in_date'  => $ci,
                 'check_out_date' => $co,
                 'rate'           => $newRate,
-                'currency'       => 'SDG',
+                'currency'       => $reservation->currency,
             ]);
 
             // Update the per-room debit transaction
@@ -763,7 +753,7 @@ class ReservationController extends Controller
             $fresh = $reservation->fresh(['rooms.type']);
             $total = 0;
             foreach ($fresh->rooms as $room) {
-                $rate   = $room->pivot->rate ?? ($room->type->base_price ?? 0);
+                $rate   = $room->pivot->rate ?? $room->priceFor($reservation->currency);
                 $total += $days * (float) $rate;
             }
             $reservation->update(['total_amount' => $total]);
@@ -1070,9 +1060,6 @@ class ReservationController extends Controller
         // Load reservation with relations
         $reservation->load(['customer', 'rooms.type', 'transactions']);
 
-        // Get room types for pricing
-        $roomTypes = RoomType::all()->keyBy('id');
-
         // Build invoice line items from the reservation's priced debit segments
         // (original booking + any extensions), so a room whose price changed
         // mid-stay prints as separate lines at their own frozen rates instead of
@@ -1116,9 +1103,7 @@ class ReservationController extends Controller
             $fallbackCheckOut = date('Y/m/d', strtotime($reservation->check_out_date));
 
             foreach ($reservation->rooms as $room) {
-                $basePrice = ($room->type && $room->type->base_price)
-                    ? $room->type->base_price
-                    : ($roomTypes[$room->room_type_id]->base_price ?? 0);
+                $basePrice = $room->priceFor($reservation->currency);
                 $roomAmount = $days * $basePrice;
                 $totalAmount += $roomAmount;
                 $roomDetails[] = [
