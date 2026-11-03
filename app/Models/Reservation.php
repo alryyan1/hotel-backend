@@ -48,6 +48,11 @@ class Reservation extends Model
         'status',
         'total_amount',
         'paid_amount',
+        'checkout_reminder_sent_at',
+    ];
+
+    protected $casts = [
+        'checkout_reminder_sent_at' => 'datetime',
     ];
 
     public function customer(): BelongsTo

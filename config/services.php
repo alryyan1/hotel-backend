@@ -48,4 +48,12 @@ return [
         'password' => env('AIRTEL_SMS_PASSWORD'),
     ],
 
+    'whatsapp_cloud' => [
+        'phone_number_id' => env('WHATSAPP_CLOUD_PHONE_NUMBER_ID'),
+        'access_token' => env('WHATSAPP_CLOUD_ACCESS_TOKEN'),
+        'waba_id' => env('WHATSAPP_CLOUD_WABA_ID'),
+        'api_version' => env('WHATSAPP_CLOUD_API_VERSION', 'v21.0'),
+        'default_country_code' => env('WHATSAPP_CLOUD_DEFAULT_COUNTRY_CODE', '249'),
+    ],
+
 ];

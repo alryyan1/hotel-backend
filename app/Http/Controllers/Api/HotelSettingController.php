@@ -4,7 +4,9 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\HotelSetting;
+use App\Services\WhatsAppCloudApiService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Storage;
 
 class HotelSettingController extends Controller
@@ -52,6 +54,8 @@ class HotelSettingController extends Controller
             'bank_name_2' => ['nullable','string','max:255'],
             'bank_account_number_2' => ['nullable','string','max:100'],
             'bank_account_name_2' => ['nullable','string','max:255'],
+            'sms_notifications_enabled' => ['nullable','boolean'],
+            'whatsapp_notifications_enabled' => ['nullable','boolean'],
             'logo' => ['nullable','image','max:2048'],
             'stamp' => ['nullable','image','max:2048'],
             'header' => ['nullable','image','max:2048'],
@@ -105,6 +109,42 @@ class HotelSettingController extends Controller
         $settings->save();
 
         return response()->json($settings);
+    }
+
+    public function notificationStatus(WhatsAppCloudApiService $whatsappService)
+    {
+        $settings = HotelSetting::first();
+
+        $smsEnabled = $settings->sms_notifications_enabled ?? true;
+        $whatsappEnabled = $settings->whatsapp_notifications_enabled ?? true;
+
+        $smsConfigured = !empty(config('services.airtel_sms.api_key'));
+        $whatsappConfigured = $whatsappService->isConfigured();
+
+        $whatsappPhoneNumber = null;
+        if ($whatsappConfigured) {
+            $phoneInfo = Cache::remember('whatsapp_cloud_sender_phone_number', 3600, function () use ($whatsappService) {
+                return $whatsappService->getSenderPhoneNumber();
+            });
+
+            if ($phoneInfo['success']) {
+                $whatsappPhoneNumber = $phoneInfo['display_phone_number'];
+            }
+        }
+
+        return response()->json([
+            'sms' => [
+                'enabled' => (bool) $smsEnabled,
+                'configured' => $smsConfigured,
+                'active' => (bool) $smsEnabled && $smsConfigured,
+            ],
+            'whatsapp' => [
+                'enabled' => (bool) $whatsappEnabled,
+                'configured' => $whatsappConfigured,
+                'active' => (bool) $whatsappEnabled && $whatsappConfigured,
+                'phone_number' => $whatsappPhoneNumber,
+            ],
+        ]);
     }
 
     public function deleteImage(Request $request)

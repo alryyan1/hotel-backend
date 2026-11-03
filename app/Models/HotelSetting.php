@@ -65,5 +65,12 @@ class HotelSetting extends Model
         'bank_name_2',
         'bank_account_number_2',
         'bank_account_name_2',
+        'sms_notifications_enabled',
+        'whatsapp_notifications_enabled',
+    ];
+
+    protected $casts = [
+        'sms_notifications_enabled' => 'boolean',
+        'whatsapp_notifications_enabled' => 'boolean',
     ];
 }

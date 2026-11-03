@@ -62,6 +62,9 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('reservations/{reservation}/update-dates', [\App\Http\Controllers\Api\ReservationController::class, 'updateDates'])->middleware('shift.open');
     Route::post('reservations/{reservation}/transfer-room', [\App\Http\Controllers\Api\ReservationController::class, 'transferRoom'])->middleware('shift.open');
     Route::get('reservations/export/excel', [\App\Http\Controllers\Api\ReservationController::class, 'exportExcel']);
+    Route::post('reservations/send-checkout-reminders', [\App\Http\Controllers\Api\ReservationController::class, 'sendCheckoutReminders']);
+    Route::get('reservations/today/{type}/pdf', [\App\Http\Controllers\Api\ReservationController::class, 'exportTodayPdf'])
+        ->whereIn('type', ['arrivals', 'departures']);
     Route::get('reservations/{reservation}/invoice/pdf', [\App\Http\Controllers\Api\ReservationController::class, 'exportInvoicePdf']);
     Route::get('reservations/{reservation}/extension-invoice/pdf', [\App\Http\Controllers\Api\ReservationController::class, 'exportExtensionInvoicePdf']);
 
@@ -69,6 +72,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('settings/hotel', [\App\Http\Controllers\Api\HotelSettingController::class, 'show']);
     Route::post('settings/hotel', [\App\Http\Controllers\Api\HotelSettingController::class, 'update']);
     Route::delete('settings/hotel/image', [\App\Http\Controllers\Api\HotelSettingController::class, 'deleteImage']);
+    Route::get('settings/notifications/status', [\App\Http\Controllers\Api\HotelSettingController::class, 'notificationStatus']);
+    Route::get('settings/whatsapp-notification-numbers', [\App\Http\Controllers\Api\WhatsAppNotificationNumberController::class, 'index']);
+    Route::post('settings/whatsapp-notification-numbers', [\App\Http\Controllers\Api\WhatsAppNotificationNumberController::class, 'store']);
+    Route::delete('settings/whatsapp-notification-numbers/{number}', [\App\Http\Controllers\Api\WhatsAppNotificationNumberController::class, 'destroy']);
 
     // Payments
     Route::apiResource('payments', \App\Http\Controllers\Api\PaymentController::class);

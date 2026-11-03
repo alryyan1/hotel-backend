@@ -13,6 +13,13 @@ use Illuminate\Validation\ValidationException;
 
 class ShiftService
 {
+    /**
+     * Minimum number of hours required between the start of one shift and the next,
+     * to stop a shift being opened again by mistake (or deliberately) right after one
+     * was just opened. Admins are exempt and can open/close at any time.
+     */
+    private const MIN_HOURS_BETWEEN_SHIFTS = 4;
+
     public function __construct(private FinancialSummaryService $summaries = new FinancialSummaryService())
     {
     }
@@ -28,6 +35,10 @@ class ShiftService
             throw ValidationException::withMessages(['shift' => 'توجد وردية مفتوحة بالفعل، يجب إغلاقها أولاً']);
         }
 
+        if (!$user->is_admin) {
+            $this->assertMinimumGapSinceLastShift();
+        }
+
         try {
             return Shift::create([
                 'opened_by' => $user->id,
@@ -39,6 +50,42 @@ class ShiftService
             // Another request opened a shift between the check above and this insert
             throw ValidationException::withMessages(['shift' => 'توجد وردية مفتوحة بالفعل، يجب إغلاقها أولاً']);
         }
+    }
+
+    /**
+     * Enforce the minimum gap between the previous shift's start and a new one,
+     * so non-admin users can't open several shifts within a short window.
+     */
+    private function assertMinimumGapSinceLastShift(): void
+    {
+        $lastShift = Shift::latest('opened_at')->first();
+        if (!$lastShift) {
+            return;
+        }
+
+        $minGapMinutes = self::MIN_HOURS_BETWEEN_SHIFTS * 60;
+        $minutesSinceLastOpen = (int) floor($lastShift->opened_at->diffInMinutes(now()));
+
+        if ($minutesSinceLastOpen >= $minGapMinutes) {
+            return;
+        }
+
+        $remaining = $minGapMinutes - $minutesSinceLastOpen;
+        $hours = intdiv($remaining, 60);
+        $minutes = $remaining % 60;
+        $hoursLabel = $hours === 1 ? 'ساعة' : 'ساعات';
+        $minutesLabel = $minutes === 1 ? 'دقيقة' : 'دقائق';
+
+        throw ValidationException::withMessages([
+            'shift' => sprintf(
+                'لا يمكن فتح وردية جديدة الآن. يجب الانتظار %d %s و %d %s (الحد الأدنى %d ساعات بين كل وردية والتي تليها)',
+                $hours,
+                $hoursLabel,
+                $minutes,
+                $minutesLabel,
+                self::MIN_HOURS_BETWEEN_SHIFTS
+            ),
+        ]);
     }
 
     /**

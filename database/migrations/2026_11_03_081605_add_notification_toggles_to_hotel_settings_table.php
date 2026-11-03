@@ -1,0 +1,29 @@
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    /**
+     * Run the migrations.
+     */
+    public function up(): void
+    {
+        Schema::table('hotel_settings', function (Blueprint $table) {
+            $table->boolean('sms_notifications_enabled')->default(true);
+            $table->boolean('whatsapp_notifications_enabled')->default(true);
+        });
+    }
+
+    /**
+     * Reverse the migrations.
+     */
+    public function down(): void
+    {
+        Schema::table('hotel_settings', function (Blueprint $table) {
+            $table->dropColumn(['sms_notifications_enabled', 'whatsapp_notifications_enabled']);
+        });
+    }
+};

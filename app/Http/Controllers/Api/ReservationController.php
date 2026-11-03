@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Reservation;
 use App\Models\Transaction;
 use App\Services\ReservationSmsService;
+use App\Services\WhatsAppCloudApiService;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
 use Illuminate\Support\Facades\DB;
@@ -24,7 +25,10 @@ use Illuminate\Http\Response;
 
 class ReservationController extends Controller
 {
-    public function __construct(private ReservationSmsService $smsService) {}
+    public function __construct(
+        private ReservationSmsService $smsService,
+        private WhatsAppCloudApiService $whatsappService
+    ) {}
 
     /**
      * Display a listing of the resource.
@@ -67,6 +71,16 @@ class ReservationController extends Controller
             $start = \Carbon\Carbon::parse($request->created_at_date)->setTime(12, 0, 0);
             $end   = \Carbon\Carbon::parse($request->created_at_date)->addDay()->setTime(11, 59, 59);
             $query->whereBetween('created_at', [$start, $end]);
+        }
+
+        // Exact-day filter for reservations arriving on a specific date (e.g. "today")
+        if ($request->filled('checkin_date')) {
+            $query->whereDate('check_in_date', $request->checkin_date);
+        }
+
+        // Exact-day filter for reservations departing on a specific date (e.g. "today")
+        if ($request->filled('checkout_date')) {
+            $query->whereDate('check_out_date', $request->checkout_date);
         }
 
         // Date range filter based on check-in / check-out dates
@@ -318,12 +332,67 @@ class ReservationController extends Controller
         }
         $reservation->update(['status' => 'confirmed']);
 
-        $smsResult = $this->smsService->sendReservationConfirmationSms($reservation);
+        $notificationSettings = HotelSetting::first();
+        $smsEnabled = $notificationSettings->sms_notifications_enabled ?? true;
+        $whatsappEnabled = $notificationSettings->whatsapp_notifications_enabled ?? true;
+
+        $smsResult = $smsEnabled
+            ? $this->smsService->sendReservationConfirmationSms($reservation)
+            : ['success' => false, 'error' => 'SMS notifications are disabled', 'skipped' => true];
+        $whatsappResult = $whatsappEnabled
+            ? $this->whatsappService->sendReservationConfirmationTemplate($reservation)
+            : ['success' => false, 'error' => 'WhatsApp notifications are disabled', 'skipped' => true];
 
         $responseData = $reservation->load(['customer', 'rooms', 'payments']);
         $responseData->sms_result = $smsResult;
+        $responseData->whatsapp_result = $whatsappResult;
 
         return response()->json($responseData);
+    }
+
+    /**
+     * Manually trigger WhatsApp checkout reminders for every reservation checking out
+     * today that hasn't been reminded yet. Admin-triggered from the UI rather than a
+     * scheduled job, since this environment has no cron wired up for the scheduler.
+     */
+    public function sendCheckoutReminders()
+    {
+        $settings = HotelSetting::first();
+        if (!($settings->whatsapp_notifications_enabled ?? true)) {
+            return response()->json(['message' => 'إشعارات واتساب معطّلة من الإعدادات', 'sent' => 0, 'total' => 0], 422);
+        }
+
+        $reservations = Reservation::whereDate('check_out_date', today())
+            ->whereIn('status', ['confirmed', 'checked_in'])
+            ->whereNull('checkout_reminder_sent_at')
+            ->with('customer')
+            ->get();
+
+        $sent = 0;
+        $notified = [];
+        $failures = [];
+
+        foreach ($reservations as $reservation) {
+            $result = $this->whatsappService->sendCheckoutReminderTemplate($reservation);
+
+            if ($result['success']) {
+                $reservation->update(['checkout_reminder_sent_at' => now()]);
+                $notified[] = [
+                    'reservation_id' => $reservation->id,
+                    'checkout_reminder_sent_at' => $reservation->checkout_reminder_sent_at,
+                ];
+                $sent++;
+            } else {
+                $failures[] = ['reservation_id' => $reservation->id, 'error' => $result['error'] ?? 'unknown error'];
+            }
+        }
+
+        return response()->json([
+            'sent' => $sent,
+            'total' => $reservations->count(),
+            'notified' => $notified,
+            'failures' => $failures,
+        ]);
     }
 
     public function checkIn(Reservation $reservation)
@@ -456,6 +525,13 @@ class ReservationController extends Controller
             $reservation->update($updateData);
         });
 
+        $whatsappEnabled = HotelSetting::first()->whatsapp_notifications_enabled ?? true;
+        if ($whatsappEnabled) {
+            foreach ($reservation->rooms as $room) {
+                $this->whatsappService->notifyCleaningCheckout($room);
+            }
+        }
+
         return response()->json($reservation->fresh()->load(['customer', 'rooms', 'transactions']));
     }
 
@@ -465,7 +541,16 @@ class ReservationController extends Controller
             return response()->json(['message' => 'Cannot cancel after check-in'], 422);
         }
         $reservation->update(['status' => 'cancelled']);
-        return response()->json($reservation->load(['customer', 'rooms.type', 'payments']));
+
+        $whatsappEnabled = HotelSetting::first()->whatsapp_notifications_enabled ?? true;
+        $whatsappResult = $whatsappEnabled
+            ? $this->whatsappService->sendCancellationTemplate($reservation)
+            : ['success' => false, 'error' => 'WhatsApp notifications are disabled', 'skipped' => true];
+
+        $responseData = $reservation->load(['customer', 'rooms.type', 'payments']);
+        $responseData->whatsapp_result = $whatsappResult;
+
+        return response()->json($responseData);
     }
 
     public function extend(Request $request, Reservation $reservation)
@@ -1452,6 +1537,100 @@ class ReservationController extends Controller
         $pdf->SetAutoPageBreak(true, $bottomMargin);
 
         // Generate PDF and return as response
+        return response($pdf->Output($filename, 'S'), 200)
+            ->header('Content-Type', 'application/pdf')
+            ->header('Content-Disposition', 'attachment; filename="' . $filename . '"');
+    }
+
+    /**
+     * Printable list of today's arrivals or departures for the front desk.
+     */
+    public function exportTodayPdf(string $type): Response
+    {
+        $isArrivals = $type === 'arrivals';
+        $dateColumn = $isArrivals ? 'check_in_date' : 'check_out_date';
+
+        $reservations = Reservation::whereDate($dateColumn, today())
+            ->where('status', '!=', 'cancelled')
+            ->with(['customer', 'rooms'])
+            ->orderBy($dateColumn)
+            ->get();
+
+        $today = date('d/m/Y');
+        $title = $isArrivals ? 'قائمة الوصول اليوم' : 'قائمة المغادرة اليوم';
+
+        $pdf = new \TCPDF('L', 'mm', 'A4', true, 'UTF-8', false);
+        $pdf->SetCreator('Hotel Management System');
+        $pdf->SetTitle($title);
+        $pdf->setPrintHeader(false);
+        $pdf->setPrintFooter(false);
+        $pdf->SetMargins(15, 15, 15);
+        $pdf->SetAutoPageBreak(true, 15);
+        $pdf->setRTL(true);
+        $pdf->AddPage();
+
+        $settings = HotelSetting::first();
+        $hotelName = ($settings->official_name ?? null) ?: ($settings->trade_name ?? null);
+
+        if ($hotelName) {
+            $pdf->SetFont('arial', 'B', 16);
+            $pdf->Cell(0, 9, $hotelName, 0, 1, 'C');
+        }
+
+        $pdf->SetFont('arial', 'B', 14);
+        $pdf->Cell(0, 8, $title . ' - ' . $today, 0, 1, 'C');
+        $pdf->SetFont('arial', '', 10);
+        $pdf->Cell(0, 7, 'عدد الحجوزات: ' . $reservations->count(), 0, 1, 'C');
+        $pdf->Ln(3);
+
+        $pdf->SetFont('arial', 'B', 10);
+        $pdf->SetFillColor(230, 230, 230);
+
+        $colId = 20;
+        $colGuest = 55;
+        $colPhone = 35;
+        $colRooms = 40;
+        $colCheckIn = 30;
+        $colCheckOut = 30;
+        $colStatus = 30;
+        // Total: 20+55+35+40+30+30+30 = 240mm (fits A4 landscape minus margins)
+
+        $pdf->Cell($colId, 8, 'رقم الحجز', 1, 0, 'C', true);
+        $pdf->Cell($colGuest, 8, 'اسم العميل', 1, 0, 'C', true);
+        $pdf->Cell($colPhone, 8, 'الهاتف', 1, 0, 'C', true);
+        $pdf->Cell($colRooms, 8, 'الغرف', 1, 0, 'C', true);
+        $pdf->Cell($colCheckIn, 8, 'تاريخ الوصول', 1, 0, 'C', true);
+        $pdf->Cell($colCheckOut, 8, 'تاريخ المغادرة', 1, 0, 'C', true);
+        $pdf->Cell($colStatus, 8, 'الحالة', 1, 1, 'C', true);
+
+        $statusLabels = [
+            'pending' => 'في الانتظار',
+            'confirmed' => 'مؤكد',
+            'checked_in' => 'تم تسجيل الوصول',
+            'checked_out' => 'تم تسجيل المغادرة',
+            'cancelled' => 'ملغي',
+        ];
+
+        $pdf->SetFont('arial', '', 9);
+        foreach ($reservations as $reservation) {
+            $roomNumbers = $reservation->rooms->pluck('number')->implode(', ');
+
+            $pdf->Cell($colId, 7, '#' . $reservation->id, 1, 0, 'C');
+            $pdf->Cell($colGuest, 7, $reservation->customer->name ?? '-', 1, 0, 'C');
+            $pdf->Cell($colPhone, 7, $reservation->customer->phone ?? '-', 1, 0, 'C');
+            $pdf->Cell($colRooms, 7, $roomNumbers ?: '-', 1, 0, 'C');
+            $pdf->Cell($colCheckIn, 7, date('d/m/Y', strtotime($reservation->check_in_date)), 1, 0, 'C');
+            $pdf->Cell($colCheckOut, 7, date('d/m/Y', strtotime($reservation->check_out_date)), 1, 0, 'C');
+            $pdf->Cell($colStatus, 7, $statusLabels[$reservation->status] ?? $reservation->status, 1, 1, 'C');
+        }
+
+        if ($reservations->isEmpty()) {
+            $pdf->SetFont('arial', '', 10);
+            $pdf->Cell(0, 10, $isArrivals ? 'لا يوجد وصول اليوم' : 'لا يوجد مغادرة اليوم', 0, 1, 'C');
+        }
+
+        $filename = ($isArrivals ? 'arrivals_' : 'departures_') . date('Y-m-d') . '.pdf';
+
         return response($pdf->Output($filename, 'S'), 200)
             ->header('Content-Type', 'application/pdf')
             ->header('Content-Disposition', 'attachment; filename="' . $filename . '"');
