@@ -133,13 +133,14 @@ class ShiftTest extends TestCase
         $this->assertCount(1, $shift->totals['users']);
     }
 
-    public function test_only_opener_or_admin_can_close(): void
+    public function test_only_the_opener_can_close(): void
     {
         $opener = $this->makeUser();
         $shiftId = $this->actingAs($opener)->postJson('/api/shifts/open')->json('id');
 
         $this->actingAs($this->makeUser())->postJson("/api/shifts/{$shiftId}/close")->assertForbidden();
-        $this->actingAs($this->makeUser(admin: true))->postJson("/api/shifts/{$shiftId}/close")->assertOk();
+        $this->actingAs($this->makeUser(admin: true))->postJson("/api/shifts/{$shiftId}/close")->assertForbidden();
+        $this->actingAs($opener)->postJson("/api/shifts/{$shiftId}/close")->assertOk();
     }
 
     public function test_financial_operations_require_an_open_shift(): void

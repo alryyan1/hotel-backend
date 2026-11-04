@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Transaction;
 use App\Models\Customer;
+use App\Models\Reservation;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Response;
@@ -47,10 +48,9 @@ class TransactionController extends Controller
         try {
             $validated = $request->validate([
                 'customer_id' => 'required|exists:customers,id',
-                'reservation_id' => 'nullable|exists:reservations,id',
+                'reservation_id' => 'required|exists:reservations,id',
                 'method' => 'required|in:cash,bankak,Ocash,fawri',
                 'amount' => 'required|numeric|min:0.01',
-                'currency' => 'nullable|string|size:3',
                 'notes' => 'nullable|string',
                 'reference' => 'nullable|string|unique:transactions,reference',
             ]);
@@ -60,29 +60,38 @@ class TransactionController extends Controller
                 $validated['reference'] = 'TX-' . strtoupper(Str::random(8));
             }
 
-            // Set default currency if not provided
-            if (!isset($validated['currency'])) {
-                $validated['currency'] = 'SDG';
+            // A payment is always made against one reservation and always bills in
+            // that reservation's own locked-in currency — never the customer's or a
+            // client-supplied one, so mixed-currency customers can't be miscredited.
+            $reservation = Reservation::findOrFail($validated['reservation_id']);
+            if ((int) $reservation->customer_id !== (int) $validated['customer_id']) {
+                return response()->json([
+                    'message' => 'هذا الحجز لا يخص هذا العميل',
+                    'errors' => ['reservation_id' => ['هذا الحجز لا يخص هذا العميل']],
+                ], 422);
             }
+            $validated['currency'] = $reservation->currency;
 
             // Always create credit transactions from this endpoint
             $validated['type'] = 'credit';
             $validated['transaction_date'] = now();
 
-            // Check customer balance before creating payment
-            $customerBalanceService = new CustomerBalanceService();
-            $customer = Customer::findOrFail($validated['customer_id']);
-            $currentBalance = $customerBalanceService->calculate($customer);
+            // Check the reservation's own remaining balance (its debits minus its
+            // credits), not the customer's blended total, since reservations can be
+            // in different currencies and summing those together is meaningless.
+            $reservationDebit = Transaction::where('reservation_id', $reservation->id)->where('type', 'debit')->sum('amount');
+            $reservationCredit = Transaction::where('reservation_id', $reservation->id)->where('type', 'credit')->sum('amount');
+            $reservationBalance = $reservationDebit - $reservationCredit;
 
-            if ($validated['amount'] > $currentBalance['balance']) {
+            if ($validated['amount'] > $reservationBalance) {
                 return response()->json([
-                    'message' => 'مبلغ الدفعة يتجاوز الرصيد المتاح',
+                    'message' => 'مبلغ الدفعة يتجاوز الرصيد المتبقي على هذا الحجز',
                     'errors' => [
                         'amount' => [
-                            'مبلغ الدفعة (' . number_format($validated['amount'], 2) . ') يتجاوز الرصيد المتاح (' . number_format($currentBalance['balance'], 2) . ')'
+                            'مبلغ الدفعة (' . number_format($validated['amount'], 2) . ' ' . $reservation->currency . ') يتجاوز رصيد الحجز المتبقي (' . number_format($reservationBalance, 2) . ' ' . $reservation->currency . ')'
                         ]
                     ],
-                    'current_balance' => $currentBalance['balance'],
+                    'current_balance' => $reservationBalance,
                     'payment_amount' => $validated['amount']
                 ], 422);
             }

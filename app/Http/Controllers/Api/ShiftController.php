@@ -190,7 +190,7 @@ class ShiftController extends Controller
 
     private function canClose(Shift $shift, User $user): bool
     {
-        return $shift->isOpen() && ($user->is_admin || (int) $shift->opened_by === (int) $user->id);
+        return $shift->isOpen() && (int) $shift->opened_by === (int) $user->id;
     }
 
     /**
