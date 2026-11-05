@@ -48,11 +48,11 @@ class ReservationController extends Controller
     /**
      * Record a room transfer (old room -> new room) for the reservation timeline.
      */
-    private function logRoomTransfer(Reservation $reservation, string $oldRoomNumber, string $newRoomNumber, ?int $userId): void
+    private function logRoomTransfer(Reservation $reservation, string $oldRoomNumber, string $newRoomNumber, string $fromDate, ?int $userId): void
     {
         ReservationStatusLog::create([
             'reservation_id' => $reservation->id,
-            'notes' => "تحويل غرفة: من {$oldRoomNumber} إلى {$newRoomNumber}",
+            'notes' => "تحويل غرفة: من {$oldRoomNumber} إلى {$newRoomNumber} اعتباراً من {$fromDate}",
             'user_id' => $userId,
         ]);
     }
@@ -191,7 +191,7 @@ class ReservationController extends Controller
                                 ->where('reservations.check_out_date', '>', $ci);
                           });
                       });
-                })->where('reservations.status', '!=', 'cancelled')
+                })->whereNotIn('reservations.status', ['cancelled', 'checked_out'])
                 ->exists();
             if ($overlap) {
                 return response()->json(['message' => 'Room not available for selected period','room_id' => $roomReq['id']], 422);
@@ -307,6 +307,7 @@ class ReservationController extends Controller
                 $co = $roomReq['check_out_date'] ?? $coBase;
                 $overlap = Reservation::query()
                     ->where('id', '<>', $reservation->id)
+                    ->whereNotIn('status', ['cancelled', 'checked_out'])
                     ->whereHas('rooms', function ($q) use ($roomReq, $ci, $co) {
                         $q->where('rooms.id', $roomReq['id'])
                             ->where(function ($p) use ($ci, $co) {
@@ -578,6 +579,13 @@ class ReservationController extends Controller
             if ($isEarlyCheckout) {
                 $updateData['check_out_date'] = $newCheckOutDate;
 
+                // Release the rooms too: availability checks read the per-room dates
+                foreach ($reservation->rooms as $room) {
+                    if (substr((string) $room->pivot->check_out_date, 0, 10) > $newCheckOutDate) {
+                        $reservation->rooms()->updateExistingPivot($room->id, ['check_out_date' => $newCheckOutDate]);
+                    }
+                }
+
                 if ($refundAmount > 0) {
                     Transaction::create([
                         'customer_id' => $reservation->customer_id,
@@ -646,7 +654,7 @@ class ReservationController extends Controller
         foreach ($reservation->rooms as $room) {
             $overlap = Reservation::query()
                 ->where('id', '<>', $reservation->id)
-                ->where('status', '!=', 'cancelled')
+                ->whereNotIn('status', ['cancelled', 'checked_out'])
                 ->whereHas('rooms', function ($q) use ($room, $oldCheckOut, $newCheckOut) {
                     $q->where('rooms.id', $room->id)
                         ->where(function ($p) use ($oldCheckOut, $newCheckOut) {
@@ -728,6 +736,10 @@ class ReservationController extends Controller
 
     public function transferRoom(Request $request, Reservation $reservation)
     {
+        if (in_array($reservation->status, ['cancelled', 'checked_out'])) {
+            return response()->json(['message' => 'لا يمكن تحويل غرفة في حجز ملغي أو منتهٍ'], 422);
+        }
+
         $data = $request->validate([
             'old_room_id' => ['required', 'exists:rooms,id'],
             'new_room_id' => ['required', 'exists:rooms,id', 'different:old_room_id'],
@@ -738,26 +750,39 @@ class ReservationController extends Controller
             return response()->json(['message' => 'الغرفة القديمة غير موجودة في هذا الحجز'], 422);
         }
 
+        if ($reservation->rooms()->where('rooms.id', $data['new_room_id'])->exists()) {
+            return response()->json(['message' => 'الغرفة الجديدة موجودة بالفعل في هذا الحجز'], 422);
+        }
+
         $ci = $oldRoom->pivot->check_in_date ?? $reservation->check_in_date;
         $co = $oldRoom->pivot->check_out_date ?? $reservation->check_out_date;
         $ci = $ci instanceof \Carbon\Carbon ? $ci->toDateString() : substr($ci, 0, 10);
         $co = $co instanceof \Carbon\Carbon ? $co->toDateString() : substr($co, 0, 10);
 
+        // A guest already in-house moves from tonight on: nights already spent stay
+        // on the old room at their frozen price. Before check-in the whole stay moves.
+        $today = now()->toDateString();
+        $from  = $reservation->status === 'checked_in' && $today > $ci ? $today : $ci;
+
+        if ($from >= $co) {
+            return response()->json(['message' => 'لا توجد ليالٍ متبقية في هذه الغرفة لتحويلها'], 422);
+        }
+
         // Check new room availability (exclude cancelled/checked_out reservations)
         $overlap = Reservation::query()
             ->where('id', '<>', $reservation->id)
             ->whereNotIn('status', ['cancelled', 'checked_out'])
-            ->whereHas('rooms', function ($q) use ($data, $ci, $co) {
+            ->whereHas('rooms', function ($q) use ($data, $from, $co) {
                 $q->where('rooms.id', $data['new_room_id'])
-                    ->where(function ($p) use ($ci, $co) {
-                        $p->where(function ($x) use ($ci, $co) {
+                    ->where(function ($p) use ($from, $co) {
+                        $p->where(function ($x) use ($from, $co) {
                             $x->where('reservation_room.check_in_date', '<', $co)
-                                ->where('reservation_room.check_out_date', '>', $ci);
-                        })->orWhere(function ($x) use ($ci, $co) {
+                                ->where('reservation_room.check_out_date', '>', $from);
+                        })->orWhere(function ($x) use ($from, $co) {
                             $x->whereNull('reservation_room.check_in_date')
                                 ->whereNull('reservation_room.check_out_date')
                                 ->where('reservations.check_in_date', '<', $co)
-                                ->where('reservations.check_out_date', '>', $ci);
+                                ->where('reservations.check_out_date', '>', $from);
                         });
                     });
             })
@@ -769,59 +794,97 @@ class ReservationController extends Controller
 
         $newRoom = \App\Models\Room::with('type')->find($data['new_room_id']);
 
-        DB::transaction(function () use ($reservation, $newRoom, $ci, $co, $data) {
-            $days    = max(1, (new \DateTime($ci))->diff(new \DateTime($co))->days);
+        DB::transaction(function () use ($reservation, $oldRoom, $newRoom, $ci, $co, $from) {
             $newRate = (float) $newRoom->priceFor($reservation->currency);
+            $nightsBetween = fn (string $start, string $end) => (new \DateTime($start))->diff(new \DateTime($end))->days;
 
             // Swap rooms in pivot
-            $reservation->rooms()->detach($data['old_room_id']);
-            $reservation->rooms()->attach($data['new_room_id'], [
-                'check_in_date'  => $ci,
+            $reservation->rooms()->detach($oldRoom->id);
+            $reservation->rooms()->attach($newRoom->id, [
+                'check_in_date'  => $from,
                 'check_out_date' => $co,
                 'rate'           => $newRate,
                 'currency'       => $reservation->currency,
             ]);
 
-            // Update the per-room debit transaction
-            $oldRef = 'RES-' . $reservation->id . '-ROOM-' . $data['old_room_id'];
-            $newRef = 'RES-' . $reservation->id . '-ROOM-' . $data['new_room_id'];
-
-            $t = Transaction::where('reservation_id', $reservation->id)
-                ->where('reference', $oldRef)
-                ->first();
-
-            if ($t) {
-                $t->update([
-                    'amount'           => $days * $newRate,
-                    'rate'             => $newRate,
-                    'nights'           => $days,
-                    'room_id'          => $data['new_room_id'],
-                    'check_in_date'    => $ci,
-                    'check_out_date'   => $co,
-                    'reference'        => $newRef,
-                    'notes'            => "حجز غرفة {$newRoom->number} - وصول {$ci} - مغادرة {$co}",
-                    'transaction_date' => $ci,
-                ]);
-            }
-
-            // Re-point any other debit transactions tied to the old room (e.g. earlier
-            // extensions) so their history stays attached to the room now occupying them
-            Transaction::where('reservation_id', $reservation->id)
-                ->where('room_id', $data['old_room_id'])
+            // Booking and extension debits of the old room. Rows migrated from the old
+            // per-reservation format have no room_id, only the per-room reference.
+            $segments = Transaction::where('reservation_id', $reservation->id)
                 ->where('type', 'debit')
-                ->update(['room_id' => $data['new_room_id']]);
+                ->whereNull('reservation_service_id')
+                ->where(function ($q) use ($reservation, $oldRoom) {
+                    $q->where('room_id', $oldRoom->id)
+                        ->orWhere(function ($legacy) use ($reservation, $oldRoom) {
+                            $legacy->whereNull('room_id')
+                                ->where('reference', 'RES-' . $reservation->id . '-ROOM-' . $oldRoom->id);
+                        });
+                })
+                ->get();
 
-            // Recalculate reservation total
-            $fresh = $reservation->fresh(['rooms.type']);
-            $total = 0;
-            foreach ($fresh->rooms as $room) {
-                $rate   = $room->pivot->rate ?? $room->priceFor($reservation->currency);
-                $total += $days * (float) $rate;
+            // Split each segment at the transfer date, so past nights keep their price
+            // and only the coming nights are charged at the new room's rate.
+            $amountChange = 0;
+            foreach ($segments as $segment) {
+                $segmentRate = (float) ($segment->rate ?? $oldRoom->pivot->rate ?? 0);
+                $segmentIn   = $segment->check_in_date?->toDateString() ?? $ci;
+                $segmentOut  = $segment->check_out_date?->toDateString();
+
+                if (!$segmentOut) {
+                    $legacyNights = $segment->nights
+                        ?? ($segmentRate > 0 ? (int) round($segment->amount / $segmentRate) : $nightsBetween($segmentIn, $co));
+                    $segmentOut = (new \DateTime($segmentIn))->modify("+{$legacyNights} days")->format('Y-m-d');
+                }
+
+                if ($segmentOut <= $from) {
+                    continue;
+                }
+
+                $movedNights = $nightsBetween(max($segmentIn, $from), $segmentOut);
+                $movedFields = [
+                    'room_id'        => $newRoom->id,
+                    'amount'         => $movedNights * $newRate,
+                    'rate'           => $newRate,
+                    'nights'         => $movedNights,
+                    'check_in_date'  => max($segmentIn, $from),
+                    'check_out_date' => $segmentOut,
+                    'notes'          => 'غرفة ' . $newRoom->number,
+                ];
+                $oldAmount = (float) $segment->amount;
+
+                if ($segmentIn < $from) {
+                    $keptNights = $nightsBetween($segmentIn, $from);
+                    $keptAmount = round($keptNights * $segmentRate, 2);
+
+                    $segment->update([
+                        'room_id'        => $oldRoom->id,
+                        'amount'         => $keptAmount,
+                        'rate'           => $segmentRate,
+                        'nights'         => $keptNights,
+                        'check_in_date'  => $segmentIn,
+                        'check_out_date' => $from,
+                    ]);
+
+                    Transaction::create($movedFields + [
+                        'customer_id'      => $reservation->customer_id,
+                        'reservation_id'   => $reservation->id,
+                        'type'             => 'debit',
+                        'currency'         => $segment->currency,
+                        'transaction_date' => $from,
+                        'reference'        => 'TRF-' . $reservation->id . '-ROOM-' . $newRoom->id . '-' . $segment->id,
+                    ]);
+
+                    $amountChange += $keptAmount + $movedFields['amount'] - $oldAmount;
+                } else {
+                    $segment->update($movedFields);
+                    $amountChange += $movedFields['amount'] - $oldAmount;
+                }
             }
-            $reservation->update(['total_amount' => $total]);
+
+            // Apply the difference only: other rooms and extensions are left untouched
+            $reservation->update(['total_amount' => (float) $reservation->total_amount + $amountChange]);
         });
 
-        $this->logRoomTransfer($reservation, $oldRoom->number, $newRoom->number, $request->user()?->id);
+        $this->logRoomTransfer($reservation, $oldRoom->number, $newRoom->number, $from, $request->user()?->id);
 
         $fresh = $reservation->fresh()->load(['customer', 'rooms.type', 'transactions']);
         $fresh->setAttribute('has_room_transfer', true);
