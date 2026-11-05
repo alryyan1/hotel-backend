@@ -43,6 +43,7 @@ class HotelSettingController extends Controller
     {
         $data = $request->validate([
             'official_name' => ['required','string','max:255'],
+            'branch_name' => ['nullable','string','max:255'],
             'address_line' => ['nullable','string','max:255'],
             'city' => ['nullable','string','max:100'],
             'phone' => ['nullable','string','max:50'],

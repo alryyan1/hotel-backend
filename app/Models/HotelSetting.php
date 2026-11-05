@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Model;
 /**
  * @property int $id
  * @property string $official_name
+ * @property string|null $branch_name
  * @property string|null $trade_name
  * @property string|null $logo_path
  * @property string|null $stamp_path
@@ -50,6 +51,7 @@ class HotelSetting extends Model
 {
     protected $fillable = [
         'official_name',
+        'branch_name',
         'logo_path',
         'stamp_path',
         'header_path',
