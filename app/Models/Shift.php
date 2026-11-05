@@ -42,11 +42,6 @@ class Shift extends Model
         return $this->hasMany(Transaction::class);
     }
 
-    public function costs(): HasMany
-    {
-        return $this->hasMany(Cost::class);
-    }
-
     public function reservationServices(): HasMany
     {
         return $this->hasMany(ReservationService::class);

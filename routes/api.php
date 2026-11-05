@@ -59,13 +59,13 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('reservations/{reservation}/check-out', [\App\Http\Controllers\Api\ReservationController::class, 'checkOut'])->middleware('shift.open');
     Route::post('reservations/{reservation}/cancel', [\App\Http\Controllers\Api\ReservationController::class, 'cancel']);
     Route::post('reservations/{reservation}/extend', [\App\Http\Controllers\Api\ReservationController::class, 'extend'])->middleware('shift.open');
-    Route::post('reservations/{reservation}/update-dates', [\App\Http\Controllers\Api\ReservationController::class, 'updateDates'])->middleware('shift.open');
     Route::post('reservations/{reservation}/transfer-room', [\App\Http\Controllers\Api\ReservationController::class, 'transferRoom'])->middleware('shift.open');
     Route::get('reservations/export/excel', [\App\Http\Controllers\Api\ReservationController::class, 'exportExcel']);
     Route::post('reservations/send-checkout-reminders', [\App\Http\Controllers\Api\ReservationController::class, 'sendCheckoutReminders']);
     Route::get('reservations/today/{type}/pdf', [\App\Http\Controllers\Api\ReservationController::class, 'exportTodayPdf'])
         ->whereIn('type', ['arrivals', 'departures']);
     Route::get('reservations/{reservation}/invoice/pdf', [\App\Http\Controllers\Api\ReservationController::class, 'exportInvoicePdf']);
+    Route::get('reservations/{reservation}/status-logs', [\App\Http\Controllers\Api\ReservationController::class, 'statusLogs']);
     Route::get('reservations/{reservation}/extension-invoice/pdf', [\App\Http\Controllers\Api\ReservationController::class, 'exportExtensionInvoicePdf']);
 
     // Hotel settings
@@ -101,14 +101,6 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('customers/{customer}/document', [\App\Http\Controllers\Api\CustomerController::class, 'uploadDocument']);
     Route::delete('customers/{customer}/document', [\App\Http\Controllers\Api\CustomerController::class, 'deleteDocument']);
     Route::get('customers/{customer}/document', [\App\Http\Controllers\Api\CustomerController::class, 'downloadDocument']);
-
-    // Costs
-    Route::get('costs/export/excel', [\App\Http\Controllers\Api\CostController::class, 'exportExcel']);
-    Route::apiResource('costs', \App\Http\Controllers\Api\CostController::class)
-        ->middlewareFor(['store', 'update', 'destroy'], 'shift.open');
-
-    // Cost Categories
-    Route::apiResource('cost-categories', \App\Http\Controllers\Api\CostCategoryController::class);
 
     // Inventory Categories (must come before inventory routes to avoid route conflicts)
     Route::apiResource('inventory-categories', \App\Http\Controllers\Api\InventoryCategoryController::class);
@@ -147,14 +139,4 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('shifts/{shift}/pdf', [\App\Http\Controllers\Api\ShiftController::class, 'exportPdf']);
     Route::get('shifts', [\App\Http\Controllers\Api\ShiftController::class, 'index']);
     Route::get('shifts/{shift}', [\App\Http\Controllers\Api\ShiftController::class, 'show']);
-
-    // Accounting
-    Route::get('accounting/summary', [\App\Http\Controllers\Api\AccountingController::class, 'getSummary']);
-    Route::get('accounting/transactions', [\App\Http\Controllers\Api\AccountingController::class, 'getTransactions']);
-    Route::get('accounting/customer-balances', [\App\Http\Controllers\Api\AccountingController::class, 'getCustomerBalances']);
-    Route::get('accounting/monthly-report', [\App\Http\Controllers\Api\AccountingController::class, 'getMonthlyReport']);
-    Route::get('accounting/report/pdf', [\App\Http\Controllers\Api\AccountingController::class, 'exportReportPdf']);
-    Route::get('accounting/monthly-report/pdf', [\App\Http\Controllers\Api\AccountingController::class, 'exportMonthlyReportPdf']);
-    Route::get('accounting/net-breakdown/pdf', [\App\Http\Controllers\Api\AccountingController::class, 'exportNetBreakdownPdf']);
-    Route::get('accounting/report/excel', [\App\Http\Controllers\Api\AccountingController::class, 'exportReportExcel']);
 });

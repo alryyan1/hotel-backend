@@ -2,7 +2,6 @@
 
 namespace App\Services;
 
-use App\Models\Cost;
 use App\Models\ReservationService;
 use App\Models\Shift;
 use App\Models\Transaction;
@@ -106,7 +105,7 @@ class ShiftService
      */
     public function userBreakdown(Shift $shift): array
     {
-        $userIds = collect([Transaction::class, Cost::class, ReservationService::class])
+        $userIds = collect([Transaction::class, ReservationService::class])
             ->flatMap(fn ($model) => $model::where('shift_id', $shift->id)->whereNotNull('user_id')->distinct()->pluck('user_id'))
             ->unique()
             ->values();

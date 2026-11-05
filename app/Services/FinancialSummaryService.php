@@ -2,7 +2,6 @@
 
 namespace App\Services;
 
-use App\Models\Cost;
 use App\Models\ReservationService;
 use App\Models\Transaction;
 use Illuminate\Support\Facades\DB;
@@ -10,31 +9,27 @@ use Illuminate\Support\Facades\DB;
 class FinancialSummaryService
 {
     /**
-     * Revenue / services / expenses / refunds totals with per-method breakdowns.
+     * Revenue / services / refunds totals with per-method breakdowns.
      *
      * @param  array<string, mixed>  $scope  Extra where-clauses applied to every source table (e.g. shift_id, user_id)
      */
     public function summarize(?string $dateFrom = null, ?string $dateTo = null, array $scope = []): array
     {
         $transactionQuery = Transaction::query();
-        $costQuery = Cost::query();
         $serviceQuery = ReservationService::query();
 
         // Optional attribution filter (e.g. ['shift_id' => 3, 'user_id' => 7])
         foreach ($scope as $column => $value) {
             $transactionQuery->where($column, $value);
-            $costQuery->where($column, $value);
             $serviceQuery->where($column, $value);
         }
 
         if ($dateFrom) {
             $transactionQuery->where('transaction_date', '>=', $dateFrom);
-            $costQuery->where('date', '>=', $dateFrom);
         }
 
         if ($dateTo) {
             $transactionQuery->where('transaction_date', '<=', $dateTo);
-            $costQuery->where('date', '<=', $dateTo);
         }
 
         // Total revenue (credit transactions)
@@ -74,19 +69,6 @@ class FinancialSummaryService
             })
             ->toArray();
 
-        // Total expenses (costs)
-        $totalExpenses = (float) $costQuery->clone()->sum('amount');
-
-        // Payment method breakdown for expenses
-        $expensesByMethod = $costQuery->clone()
-            ->select('payment_method', DB::raw('SUM(amount) as total'))
-            ->groupBy('payment_method')
-            ->get()
-            ->mapWithKeys(function ($item) {
-                return [$item->payment_method ?: 'unknown' => (float) $item->total];
-            })
-            ->toArray();
-
         // Total service revenue
         if ($dateFrom) {
             $serviceQuery->where('created_at', '>=', $dateFrom);
@@ -108,8 +90,8 @@ class FinancialSummaryService
         // Total service revenue
         $totalServiceRevenue = (float) $serviceQuery->sum('amount');
 
-        // Net profit (revenue + service revenue - expenses - refunds)
-        $netProfit = $totalRevenue + $totalServiceRevenue - $totalExpenses - $totalRefunds;
+        // Net profit (revenue + service revenue - refunds)
+        $netProfit = $totalRevenue + $totalServiceRevenue - $totalRefunds;
 
         return [
             'total_revenue' => $totalRevenue,
@@ -119,8 +101,6 @@ class FinancialSummaryService
             'total_debits' => $totalDebits,
             'total_refunds' => $totalRefunds,
             'refunds_by_method' => $refundsByMethod,
-            'total_expenses' => $totalExpenses,
-            'expenses_by_method' => $expensesByMethod,
             'net_profit' => $netProfit,
         ];
     }

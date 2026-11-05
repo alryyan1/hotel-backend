@@ -249,15 +249,29 @@ class CustomerController extends Controller
         // Calculate ledger entries from transactions
         $ledgerEntries = $this->calculateLedgerFromTransactions($customer->transactions, $roomTypes);
 
-        $totalDebit = array_sum(array_column($ledgerEntries, 'debit'));
-        $totalCredit = array_sum(array_column($ledgerEntries, 'credit'));
-        $totalRefund = array_sum(array_column($ledgerEntries, 'refund_amount'));
+        // Totals and the final balance are kept per currency — SDG and USD activity
+        // never get summed together, since that total wouldn't mean anything.
+        $totalsByCurrency = [];
+        foreach ($ledgerEntries as $entry) {
+            $currency = $entry['currency'] ?? 'SDG';
+            $totalsByCurrency[$currency] ??= ['total_debit' => 0, 'total_credit' => 0, 'total_refund' => 0, 'final_balance' => 0];
+            $totalsByCurrency[$currency]['total_debit'] += $entry['debit'];
+            $totalsByCurrency[$currency]['total_credit'] += $entry['credit'];
+            $totalsByCurrency[$currency]['total_refund'] += $entry['refund_amount'] ?? 0;
+            $totalsByCurrency[$currency]['final_balance'] = $entry['balance'];
+        }
+        foreach ($totalsByCurrency as &$totals) {
+            $totals['total_debit'] -= $totals['total_refund'];
+            $totals['total_credit'] -= $totals['total_refund'];
+        }
+        unset($totals);
 
+        // Totals/final balance above are computed in chronological (ascending) order,
+        // which the running balance depends on — only the displayed list is reversed,
+        // so the newest reservation/transaction shows first.
         return response()->json([
-            'ledger_entries' => $ledgerEntries,
-            'total_debit' => $totalDebit - $totalRefund,
-            'total_credit' => $totalCredit - $totalRefund,
-            'final_balance' => end($ledgerEntries)['balance'] ?? 0,
+            'ledger_entries' => array_reverse($ledgerEntries),
+            'totals_by_currency' => $totalsByCurrency,
         ]);
     }
 
@@ -356,14 +370,15 @@ class CustomerController extends Controller
 
         // Define column widths (proportioned to fit available width)
         $colDate = 20;      // التاريخ
-        $colDescription = 42; // الوصف
-        $colDetails = 26;    // الغرف / طريقة الدفع
+        $colDescription = 34; // الوصف
+        $colDetails = 20;    // الغرف / طريقة الدفع
+        $colCurrency = 14;   // العملة
         $colDays = 14;       // الأيام
         $colRate = 18;       // سعر الليلة
         $colDebit = 18;      // مدين
         $colCredit = 18;     // دائن
         $colBalance = 24;    // الرصيد
-        // Total: 20+42+26+14+18+18+18+24 = 180mm
+        // Total: 20+34+20+14+14+18+18+18+24 = 180mm
 
         // Set font for Arabic text (Arial)
         $pdf->SetFont('arial', '', 10);
@@ -402,32 +417,59 @@ class CustomerController extends Controller
         $pdf->SetFont('arial', 'B', 10);
         $pdf->SetFillColor(230, 230, 230);
 
-        // NEW ORDER (RTL: Date -> Description -> Details -> Days -> Rate -> Debit -> Credit -> Balance)
+        // NEW ORDER (RTL: Date -> Description -> Details -> Currency -> Days -> Rate -> Debit -> Credit -> Balance)
         $pdf->Cell($colDate, 8, 'التاريخ', 1, 0, 'C', true);         // 1. Far Right
         $pdf->Cell($colDescription, 8, 'الوصف', 1, 0, 'C', true);     // 2.
         $pdf->Cell($colDetails, 8, 'الغرف / طريقة الدفع', 1, 0, 'C', true); // 3.
-        $pdf->Cell($colDays, 8, 'الأيام', 1, 0, 'C', true);         // 4.
-        $pdf->Cell($colRate, 8, 'سعر الليلة', 1, 0, 'C', true);     // 5.
-        $pdf->Cell($colDebit, 8, 'مدين', 1, 0, 'C', true);          // 6.
-        $pdf->Cell($colCredit, 8, 'دائن', 1, 0, 'C', true);         // 7.
-        $pdf->Cell($colBalance, 8, 'الرصيد', 1, 1, 'C', true);      // 8. Far Left (Note: 1, 1 moves to the next line)
+        $pdf->Cell($colCurrency, 8, 'العملة', 1, 0, 'C', true);      // 4.
+        $pdf->Cell($colDays, 8, 'الأيام', 1, 0, 'C', true);         // 5.
+        $pdf->Cell($colRate, 8, 'سعر الليلة', 1, 0, 'C', true);     // 6.
+        $pdf->Cell($colDebit, 8, 'الإجمالي', 1, 0, 'C', true);      // 7.
+        $pdf->Cell($colCredit, 8, 'المدفوع', 1, 0, 'C', true);      // 8.
+        $pdf->Cell($colBalance, 8, 'المتبقي', 1, 1, 'C', true);     // 9. Far Left (Note: 1, 1 moves to the next line)
 
-        // ... (code after header)
+        // Payments tied to a reservation are rolled into that reservation's
+        // المدفوع/المتبقي columns below, exactly like the on-screen ledger — so they're
+        // left out of the printed rows here instead of appearing a second time as
+        // their own line. Only standalone (legacy, reservation-less) payments print
+        // as their own row. Order matches the on-screen ledger too: newest first.
+        $paidByReservation = [];
+        foreach ($ledgerEntries as $entry) {
+            if ($entry['type'] === 'payment' && !empty($entry['reservation_id'])) {
+                $paidByReservation[$entry['reservation_id']] = ($paidByReservation[$entry['reservation_id']] ?? 0) + $entry['credit'];
+            }
+        }
+
+        $printEntries = array_reverse(array_values(array_filter(
+            $ledgerEntries,
+            fn ($entry) => !($entry['type'] === 'payment' && !empty($entry['reservation_id']))
+        )));
+
         // Ledger Entries
         $pdf->SetFont('arial', '', 9);
-        $totalDebit = 0;
-        $totalCredit = 0;
-        $totalRefund = 0;
-
+        // SDG and USD rows are never summed together — each currency keeps its own
+        // running totals, same as the on-screen ledger. Computed from the full,
+        // chronologically-ordered entry list (not the filtered/reversed $printEntries)
+        // so the running balance and totals stay correct regardless of print order.
+        $totalsByCurrency = [];
         foreach ($ledgerEntries as $entry) {
-            $totalDebit += $entry['debit'];
-            $totalCredit += $entry['credit'];
+            $entryCurrency = $entry['currency'] ?? 'SDG';
+            $totalsByCurrency[$entryCurrency] ??= ['debit' => 0, 'credit' => 0, 'refund' => 0, 'balance' => 0];
+            $totalsByCurrency[$entryCurrency]['debit'] += $entry['debit'];
+            $totalsByCurrency[$entryCurrency]['credit'] += $entry['credit'];
             if (isset($entry['refund_amount'])) {
-                $totalRefund += $entry['refund_amount'];
+                $totalsByCurrency[$entryCurrency]['refund'] += $entry['refund_amount'];
             }
+            $totalsByCurrency[$entryCurrency]['balance'] = $entry['balance'];
+        }
 
-            // RTL order: Balance, Credit, Debit, Rate, Days, Details, Description, Date
-            // ... (inside foreach ($ledgerEntries as $entry) { ... )
+        foreach ($printEntries as $entry) {
+            $entryCurrency = $entry['currency'] ?? 'SDG';
+            $isReservationCharge = in_array($entry['type'], ['reservation', 'service'], true) && !empty($entry['reservation_id']);
+            $paidForThisReservation = $isReservationCharge ? ($paidByReservation[$entry['reservation_id']] ?? 0) : 0;
+
+            // RTL order: Balance, Credit, Debit, Rate, Days, Currency, Details, Description, Date
+            // ... (inside foreach ($printEntries as $entry) { ... )
 
             // For room bookings, append the segment's exact period (from -> to) so an
             // extension is clearly distinguished from the original booking segment on
@@ -436,7 +478,6 @@ class CustomerController extends Controller
             if ($entry['type'] === 'reservation' && !empty($entry['period'])) {
                 $printedDescription .= "\n" . $entry['period'];
             }
-
             // Calculate required lines for description
             $descLines = $pdf->getNumLines($printedDescription, $colDescription);
             $rowHeight = max(8, $descLines * 5 + 2); // Minimum 8mm, expand as needed
@@ -462,6 +503,8 @@ class CustomerController extends Controller
             }
             $pdf->MultiCell($colDetails, $rowHeight, $details, 1, 'C', false, 0, '', '', true, 0, false, true, $rowHeight, 'M');
 
+            $pdf->MultiCell($colCurrency, $rowHeight, $entryCurrency, 1, 'C', false, 0, '', '', true, 0, false, true, $rowHeight, 'M');
+
             $days = $entry['days'] ?? '-';
             $pdf->MultiCell($colDays, $rowHeight, $days, 1, 'C', false, 0, '', '', true, 0, false, true, $rowHeight, 'M');
 
@@ -471,35 +514,48 @@ class CustomerController extends Controller
             $debit = $entry['debit'] > 0 ? number_format($entry['debit'], 0, '.', ',') : '-';
             $pdf->MultiCell($colDebit, $rowHeight, $debit, 1, 'C', false, 0, '', '', true, 0, false, true, $rowHeight, 'M');
 
-            $credit = $entry['credit'] > 0 ? number_format($entry['credit'], 0, '.', ',') : '-';
+            // المدفوع/المتبقي for a charge row reflect what's actually been paid
+            // toward its whole reservation (same figures as the "المدفوعات" total
+            // on the web ledger), not this row's own (always-zero) credit.
+            if ($isReservationCharge) {
+                $credit = $paidForThisReservation > 0 ? number_format($paidForThisReservation, 0, '.', ',') : '-';
+                $balance = number_format($entry['debit'] - $paidForThisReservation, 0, '.', ',');
+            } elseif ($entry['type'] === 'payment') {
+                $credit = $entry['credit'] > 0 ? number_format($entry['credit'], 0, '.', ',') : '-';
+                $balance = '-';
+            } else {
+                $credit = $entry['credit'] > 0 ? number_format($entry['credit'], 0, '.', ',') : '-';
+                $balance = number_format($entry['balance'], 0, '.', ',');
+            }
             $pdf->MultiCell($colCredit, $rowHeight, $credit, 1, 'C', false, 0, '', '', true, 0, false, true, $rowHeight, 'M');
-
-            $balance = number_format($entry['balance'], 0, '.', ',');
             $pdf->MultiCell($colBalance, $rowHeight, $balance, 1, 'C', false, 1, '', '', true, 0, false, true, $rowHeight, 'M');
 
             // ... (end of foreach loop)
         }
 
-        // Totals Row (RTL order)
+        // Totals — one row per currency (RTL order), never summed together
         $pdf->SetFont('arial', 'B', 10);
         $pdf->SetFillColor(240, 240, 240);
-        $totalColSpan = $colDate + $colDescription + $colDetails + $colDays + $colRate; // spans everything before the money columns
-        
-        // Deduct refunds from totals to show net paid amount
-        $netDebit = $totalDebit - $totalRefund;
-        $netCredit = $totalCredit - $totalRefund;
-        $finalBalance = $netDebit - $netCredit;
+        $totalColSpan = $colDate + $colDescription + $colDetails + $colCurrency + $colDays + $colRate; // spans everything before the money columns
 
-        $pdf->Cell($totalColSpan, 8, 'الإجمالي', 1, 0, 'C', true);
-        $pdf->Cell($colDebit, 8, number_format($netDebit, 0, '.', ','), 1, 0, 'C', true);
-        $pdf->Cell($colCredit, 8, number_format($netCredit, 0, '.', ','), 1, 0, 'C', true);
-        $pdf->Cell($colBalance, 8, number_format($finalBalance, 0, '.', ','), 1, 1, 'C', true);
+        foreach ($totalsByCurrency as $currency => $totals) {
+            // Deduct refunds from totals to show net paid amount
+            $netDebit = $totals['debit'] - $totals['refund'];
+            $netCredit = $totals['credit'] - $totals['refund'];
+
+            $pdf->Cell($totalColSpan, 8, 'الإجمالي (' . $currency . ')', 1, 0, 'C', true);
+            $pdf->Cell($colDebit, 8, number_format($netDebit, 0, '.', ','), 1, 0, 'C', true);
+            $pdf->Cell($colCredit, 8, number_format($netCredit, 0, '.', ','), 1, 0, 'C', true);
+            $pdf->Cell($colBalance, 8, number_format($totals['balance'], 0, '.', ','), 1, 1, 'C', true);
+        }
 
         $pdf->Ln(5);
 
-        // Final Balance
+        // Final Balance — one line per currency
         $pdf->SetFont('arial', 'B', 12);
-        $pdf->Cell(0, 8, 'الرصيد النهائي: ' . number_format($finalBalance, 0, '.', ','), 0, 1, 'R');
+        foreach ($totalsByCurrency as $currency => $totals) {
+            $pdf->Cell(0, 8, 'الرصيد النهائي (' . $currency . '): ' . number_format($totals['balance'], 0, '.', ','), 0, 1, 'R');
+        }
 
         $pdf->SetAutoPageBreak(false);
 
@@ -579,7 +635,9 @@ class CustomerController extends Controller
     private function calculateLedgerFromTransactions($transactions, $roomTypes): array
     {
         $entries = [];
-        $runningBalance = 0;
+        // Keyed by currency: SDG and USD transactions never share a running total,
+        // since summing amounts across currencies produces a meaningless number.
+        $runningBalance = [];
 
         // Sort transactions by ID (insertion order)
         $sortedTransactions = $transactions->sortBy('id');
@@ -596,7 +654,8 @@ class CustomerController extends Controller
                 // Service debit transaction
                 if ($transaction->reservation_service_id) {
                     $serviceName = $transaction->reservationService?->service?->name ?? ($transaction->notes ?? 'خدمة');
-                    $runningBalance += $transaction->amount;
+                    $currency = $transaction->currency ?? 'SDG';
+                    $runningBalance[$currency] = ($runningBalance[$currency] ?? 0) + $transaction->amount;
                     $entries[] = [
                         'id'                     => $transaction->id,
                         'reservation_service_id' => $transaction->reservation_service_id,
@@ -604,11 +663,11 @@ class CustomerController extends Controller
                         'type'                   => 'service',
                         'date'                   => date('d/m/Y', strtotime($transaction->transaction_date)),
                         'description'            => 'خدمة: ' . $serviceName,
-                        'currency'               => $transaction->currency,
+                        'currency'               => $currency,
                         'days'                   => null,
                         'debit'                  => $transaction->amount,
                         'credit'                 => 0,
-                        'balance'                => $runningBalance,
+                        'balance'                => $runningBalance[$currency],
                     ];
                     continue;
                 }
@@ -643,7 +702,8 @@ class CustomerController extends Controller
                         ? date('d/m/Y', strtotime($transaction->check_out_date))
                         : date('d/m/Y', strtotime($reservation->check_out_date));
 
-                    $runningBalance += $transaction->amount;
+                    $currency = $transaction->currency ?? 'SDG';
+                    $runningBalance[$currency] = ($runningBalance[$currency] ?? 0) + $transaction->amount;
 
                     $entries[] = [
                         'id'             => $transaction->id,
@@ -652,29 +712,30 @@ class CustomerController extends Controller
                         'date'           => date('d/m/Y', strtotime($transaction->transaction_date)),
                         'description'    => 'حجز #' . $reservation->id . ' - ' . $roomDisplay . ($isExtension ? ' (تمديد)' : ''),
                         'rooms'          => $roomDisplay,
-                        'currency'       => $transaction->currency,
+                        'currency'       => $currency,
                         'days'           => $segmentNights,
                         'period'         => $segmentCheckIn . ' → ' . $segmentCheckOut,
                         'rate'           => $transaction->rate !== null ? (float) $transaction->rate : null,
                         'is_extension'   => $isExtension,
                         'debit'          => $transaction->amount,
                         'credit'         => 0,
-                        'balance'        => $runningBalance
+                        'balance'        => $runningBalance[$currency]
                     ];
                 } else {
                     // Debit without reservation (shouldn't happen normally, but handle gracefully)
-                    $runningBalance += $transaction->amount;
+                    $currency = $transaction->currency ?? 'SDG';
+                    $runningBalance[$currency] = ($runningBalance[$currency] ?? 0) + $transaction->amount;
                     $entries[] = [
                         'id' => $transaction->id,
                         'type' => 'reservation',
                         'date' => date('d/m/Y', strtotime($transaction->transaction_date)),
                         'description' => $transaction->notes ?? 'حجز',
                         'rooms' => '-',
-                        'currency' => $transaction->currency,
+                        'currency' => $currency,
                         'days' => null,
                         'debit' => $transaction->amount,
                         'credit' => 0,
-                        'balance' => $runningBalance
+                        'balance' => $runningBalance[$currency]
                     ];
                 }
             } elseif ($transaction->type === 'refund') {
@@ -683,6 +744,7 @@ class CustomerController extends Controller
                 
                 $notes = $transaction->notes ?? ('استرجاع مبلغ - ' . ($transaction->reference ?? ''));
                 $description = $notes . ' (المبلغ: ' . number_format($transaction->amount, 0, '.', ',') . ')';
+                $currency = $transaction->currency ?? 'SDG';
 
                 $entries[] = [
                     'id' => $transaction->id,
@@ -690,16 +752,17 @@ class CustomerController extends Controller
                     'type' => 'refund',
                     'date' => date('d/m/Y', strtotime($transaction->transaction_date)),
                     'description' => $description,
-                    'currency' => $transaction->currency,
+                    'currency' => $currency,
                     'days' => null,
                     'debit' => 0,
                     'credit' => 0,
                     'refund_amount' => $transaction->amount,
-                    'balance' => $runningBalance
+                    'balance' => $runningBalance[$currency] ?? 0
                 ];
             } else {
                 // Credit transaction (payment)
-                $runningBalance -= $transaction->amount;
+                $currency = $transaction->currency ?? 'SDG';
+                $runningBalance[$currency] = ($runningBalance[$currency] ?? 0) - $transaction->amount;
 
                 $entries[] = [
                     'id' => $transaction->id,
@@ -708,11 +771,11 @@ class CustomerController extends Controller
                     'date' => date('d/m/Y', strtotime($transaction->transaction_date)),
                     'description' => 'دفعة - ' . ($transaction->reference ?? ''),
                     'paymentMethod' => $methodLabels[$transaction->method] ?? $transaction->method ?? '',
-                    'currency' => $transaction->currency,
+                    'currency' => $currency,
                     'days' => null,
                     'debit' => 0,
                     'credit' => $transaction->amount,
-                    'balance' => $runningBalance
+                    'balance' => $runningBalance[$currency]
                 ];
             }
         }

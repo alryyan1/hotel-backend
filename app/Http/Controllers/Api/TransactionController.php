@@ -72,6 +72,15 @@ class TransactionController extends Controller
             }
             $validated['currency'] = $reservation->currency;
 
+            // The local e-wallet/bank rails (bankak, Ocash, fawri) only settle in SDG —
+            // a USD reservation can only be paid in physical cash.
+            if ($reservation->currency === 'USD' && $validated['method'] !== 'cash') {
+                return response()->json([
+                    'message' => 'الدفعات بالدولار تكون نقداً فقط',
+                    'errors' => ['method' => ['الدفعات بالدولار تكون نقداً فقط']],
+                ], 422);
+            }
+
             // Always create credit transactions from this endpoint
             $validated['type'] = 'credit';
             $validated['transaction_date'] = now();

@@ -2,7 +2,6 @@
 
 namespace Tests\Feature;
 
-use App\Models\Cost;
 use App\Models\Customer;
 use App\Models\Shift;
 use App\Models\Transaction;
@@ -32,18 +31,6 @@ class ShiftTest extends TestCase
         ]);
     }
 
-    private function cost(User $user, float $amount, string $method = 'cash'): Cost
-    {
-        $this->actingAs($user);
-
-        return Cost::create([
-            'description' => 'مصروف',
-            'amount' => $amount,
-            'date' => now()->toDateString(),
-            'payment_method' => $method,
-        ]);
-    }
-
     public function test_only_one_shift_can_be_open(): void
     {
         $user = $this->makeUser();
@@ -69,12 +56,9 @@ class ShiftTest extends TestCase
         $shift = Shift::create(['opened_by' => $user->id, 'opened_at' => now(), 'status' => 'open', 'open_flag' => true]);
 
         $transaction = $this->credit($user, 100);
-        $cost = $this->cost($user, 20);
 
         $this->assertSame($user->id, (int) $transaction->user_id);
         $this->assertSame($shift->id, (int) $transaction->shift_id);
-        $this->assertSame($user->id, (int) $cost->user_id);
-        $this->assertSame($shift->id, (int) $cost->shift_id);
     }
 
     public function test_regular_user_sees_only_their_own_revenue(): void
@@ -121,14 +105,13 @@ class ShiftTest extends TestCase
 
         $this->credit($user, 1000);
         $this->credit($user, 400, 'bankak');
-        $this->cost($user, 150);
 
         $this->actingAs($user)->postJson("/api/shifts/{$shiftId}/close")
             ->assertOk()
             ->assertJsonPath('status', 'closed');
 
         $shift = Shift::find($shiftId);
-        $this->assertEquals(1250, $shift->totals['summary']['net_profit']);
+        $this->assertEquals(1400, $shift->totals['summary']['net_profit']);
         $this->assertEquals(1400, $shift->totals['summary']['total_revenue']);
         $this->assertCount(1, $shift->totals['users']);
     }
@@ -143,32 +126,56 @@ class ShiftTest extends TestCase
         $this->actingAs($opener)->postJson("/api/shifts/{$shiftId}/close")->assertOk();
     }
 
+    private function makeRoom(): \App\Models\Room
+    {
+        $floor = \App\Models\Floor::create(['number' => (string) uniqid()]);
+        $type = \App\Models\RoomType::create(['name' => 'Standard ' . uniqid()]);
+        $status = \App\Models\RoomStatus::create(['code' => 'available-' . uniqid(), 'name' => 'Available']);
+
+        return \App\Models\Room::create([
+            'number' => 'R' . uniqid(),
+            'floor_id' => $floor->id,
+            'room_type_id' => $type->id,
+            'room_status_id' => $status->id,
+            'price_usd' => 10,
+            'price_sdg' => 1000,
+        ]);
+    }
+
+    private function reservationPayload(int $customerId, int $roomId): array
+    {
+        return [
+            'customer_id' => $customerId,
+            'check_in_date' => now()->toDateString(),
+            'check_out_date' => now()->addDay()->toDateString(),
+            'rooms' => [['id' => $roomId]],
+        ];
+    }
+
     public function test_financial_operations_require_an_open_shift(): void
     {
         $user = $this->makeUser();
+        $customer = Customer::create(['name' => 'عميل ' . uniqid()]);
+        $room = $this->makeRoom();
+        $payload = $this->reservationPayload($customer->id, $room->id);
 
-        $this->actingAs($user)->postJson('/api/costs', [
-            'description' => 'مصروف',
-            'amount' => 10,
-            'date' => now()->toDateString(),
-        ])->assertStatus(423)->assertJsonPath('code', 'shift_required');
+        $this->actingAs($user)->postJson('/api/reservations', $payload)
+            ->assertStatus(423)->assertJsonPath('code', 'shift_required');
 
         $this->actingAs($user)->postJson('/api/shifts/open');
 
-        $this->actingAs($user)->postJson('/api/costs', [
-            'description' => 'مصروف',
-            'amount' => 10,
-            'date' => now()->toDateString(),
-        ])->assertCreated();
+        $this->actingAs($user)->postJson('/api/reservations', $payload)
+            ->assertCreated();
     }
 
     public function test_admin_is_exempt_from_open_shift_requirement(): void
     {
-        $this->actingAs($this->makeUser(admin: true))->postJson('/api/costs', [
-            'description' => 'مصروف',
-            'amount' => 10,
-            'date' => now()->toDateString(),
-        ])->assertCreated();
+        $customer = Customer::create(['name' => 'عميل ' . uniqid()]);
+        $room = $this->makeRoom();
+
+        $this->actingAs($this->makeUser(admin: true))
+            ->postJson('/api/reservations', $this->reservationPayload($customer->id, $room->id))
+            ->assertCreated();
     }
 
     public function test_list_and_pdf_respect_user_scope(): void
@@ -192,16 +199,5 @@ class ShiftTest extends TestCase
         $this->actingAs($this->makeUser(admin: true))->get("/api/shifts/{$shiftId}/pdf")
             ->assertOk()
             ->assertHeader('Content-Type', 'application/pdf');
-    }
-
-    public function test_existing_accounting_summary_is_unchanged_by_shift_scoping(): void
-    {
-        $user = $this->makeUser(admin: true);
-        $this->credit($user, 200);  // no shift open: unattributed to a shift
-        $this->actingAs($user)->postJson('/api/shifts/open');
-        $this->credit($user, 300);
-
-        $this->actingAs($user)->getJson('/api/accounting/summary')
-            ->assertJsonPath('total_revenue', 500);
     }
 }
