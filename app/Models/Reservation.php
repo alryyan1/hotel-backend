@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use App\Models\Transaction;
 
 /**
@@ -58,6 +59,20 @@ class Reservation extends Model
     public function customer(): BelongsTo
     {
         return $this->belongsTo(Customer::class);
+    }
+
+    public function statusLogs(): HasMany
+    {
+        return $this->hasMany(ReservationStatusLog::class);
+    }
+
+    /**
+     * The log entry recorded when this reservation was first created — used to show
+     * who recorded the reservation ("سجل بواسطه") without a dedicated created_by column.
+     */
+    public function creationLog(): HasOne
+    {
+        return $this->hasOne(ReservationStatusLog::class)->whereNull('from_status')->oldest('id');
     }
 
     public function rooms(): BelongsToMany

@@ -11,6 +11,13 @@ class FinancialSummaryService
     /**
      * Revenue / services / refunds totals with per-method breakdowns.
      *
+     * SDG is the only currency with more than one payment method (cash, bankak,
+     * Ocash, fawri) — USD reservations can only ever be paid in physical cash
+     * (enforced in TransactionController::store), so USD revenue is reported as
+     * one "cash received" total rather than a method breakdown. Reservation
+     * services carry no currency of their own, so service revenue is bucketed
+     * under SDG (the currency almost all services are actually billed in).
+     *
      * @param  array<string, mixed>  $scope  Extra where-clauses applied to every source table (e.g. shift_id, user_id)
      */
     public function summarize(?string $dateFrom = null, ?string $dateTo = null, array $scope = []): array
@@ -32,13 +39,15 @@ class FinancialSummaryService
             $transactionQuery->where('transaction_date', '<=', $dateTo);
         }
 
-        // Total revenue (credit transactions)
-        $totalRevenue = (float) $transactionQuery->clone()
+        $sdgTransactions = $transactionQuery->clone()->where('currency', 'SDG');
+
+        // Total revenue (SDG credit transactions)
+        $totalRevenue = (float) $sdgTransactions->clone()
             ->where('type', 'credit')
             ->sum('amount');
 
         // Payment method breakdown for revenue
-        $revenueByMethod = $transactionQuery->clone()
+        $revenueByMethod = $sdgTransactions->clone()
             ->where('type', 'credit')
             ->select('method', DB::raw('SUM(amount) as total'))
             ->groupBy('method')
@@ -48,18 +57,18 @@ class FinancialSummaryService
             })
             ->toArray();
 
-        // Total debits (reservation transactions)
-        $totalDebits = (float) $transactionQuery->clone()
+        // Total debits (SDG reservation transactions)
+        $totalDebits = (float) $sdgTransactions->clone()
             ->where('type', 'debit')
             ->sum('amount');
 
-        // Total refunds (early checkout refunds)
-        $totalRefunds = (float) $transactionQuery->clone()
+        // Total refunds (SDG early checkout refunds)
+        $totalRefunds = (float) $sdgTransactions->clone()
             ->where('type', 'refund')
             ->sum('amount');
 
         // Payment method breakdown for refunds
-        $refundsByMethod = $transactionQuery->clone()
+        $refundsByMethod = $sdgTransactions->clone()
             ->where('type', 'refund')
             ->select('method', DB::raw('SUM(amount) as total'))
             ->groupBy('method')
@@ -68,6 +77,12 @@ class FinancialSummaryService
                 return [$item->method ?: 'cash' => (float) $item->total];
             })
             ->toArray();
+
+        // USD only ever settles as cash, so a single received total is all that's meaningful.
+        $totalRevenueUsdCash = (float) $transactionQuery->clone()
+            ->where('currency', 'USD')
+            ->where('type', 'credit')
+            ->sum('amount');
 
         // Total service revenue
         if ($dateFrom) {
@@ -90,11 +105,13 @@ class FinancialSummaryService
         // Total service revenue
         $totalServiceRevenue = (float) $serviceQuery->sum('amount');
 
-        // Net profit (revenue + service revenue - refunds)
+        // Net profit (SDG revenue + service revenue - SDG refunds) — USD cash
+        // received is reported separately since it can't be summed with SDG.
         $netProfit = $totalRevenue + $totalServiceRevenue - $totalRefunds;
 
         return [
             'total_revenue' => $totalRevenue,
+            'total_revenue_usd_cash' => $totalRevenueUsdCash,
             'total_service_revenue' => $totalServiceRevenue,
             'revenue_by_method' => $revenueByMethod,
             'services_by_method' => $serviceRevenueByMethod,

@@ -78,7 +78,7 @@ class WhatsAppCloudApiService
         $customer = $reservation->customer;
 
         if (!$customer || !$customer->phone) {
-            return ['success' => false, 'error' => 'Customer phone number not available'];
+            return ['success' => false, 'error' => 'Customer phone number not available', 'recipients' => []];
         }
 
         $bodyParams = [
@@ -87,8 +87,18 @@ class WhatsAppCloudApiService
             "#{$reservation->id}",
         ];
 
-        $result = $this->sendTemplateMessage($customer->phone, 'booking_confirmation', 'ar', $bodyParams);
-        $this->notifyEventNumbers('confirmation', 'booking_confirmation', 'ar', $bodyParams);
+        $result = $this->sendTemplateMessage($customer->phone, 'booking_confirmation_branch1', 'ar', $bodyParams);
+        $extraResults = $this->notifyEventNumbers('confirmation', 'booking_confirmation_branch1', 'ar', $bodyParams);
+
+        $result['recipients'] = array_merge(
+            [[
+                'phone' => $customer->phone,
+                'label' => 'العميل',
+                'success' => (bool) $result['success'],
+                'error' => $result['error'] ?? null,
+            ]],
+            $extraResults
+        );
 
         return $result;
     }
@@ -126,7 +136,17 @@ class WhatsAppCloudApiService
         ];
 
         $result = $this->sendTemplateMessage($customer->phone, 'booking_cancellation_guest', 'ar', $bodyParams);
-        $this->notifyEventNumbers('cancellation', 'booking_cancellation_guest', 'ar', $bodyParams);
+        $extraResults = $this->notifyEventNumbers('cancellation', 'booking_cancellation_guest', 'ar', $bodyParams);
+
+        $result['recipients'] = array_merge(
+            [[
+                'phone' => $customer->phone,
+                'label' => 'العميل',
+                'success' => (bool) $result['success'],
+                'error' => $result['error'] ?? null,
+            ]],
+            $extraResults
+        );
 
         return $result;
     }
@@ -169,14 +189,24 @@ class WhatsAppCloudApiService
      * Failures here are logged but never affect the customer-facing send result.
      *
      * @param array<int, string> $bodyParams
+     * @return array<int, array{phone: string, label: ?string, success: bool, error: ?string}>
      */
-    private function notifyEventNumbers(string $event, string $templateName, string $languageCode, array $bodyParams): void
+    private function notifyEventNumbers(string $event, string $templateName, string $languageCode, array $bodyParams): array
     {
-        $numbers = WhatsAppNotificationNumber::where('event', $event)->pluck('phone');
+        $numbers = WhatsAppNotificationNumber::where('event', $event)->get(['phone', 'label']);
 
-        foreach ($numbers as $phone) {
-            $this->sendTemplateMessage($phone, $templateName, $languageCode, $bodyParams);
+        $results = [];
+        foreach ($numbers as $number) {
+            $result = $this->sendTemplateMessage($number->phone, $templateName, $languageCode, $bodyParams);
+            $results[] = [
+                'phone' => $number->phone,
+                'label' => $number->label,
+                'success' => (bool) $result['success'],
+                'error' => $result['error'] ?? null,
+            ];
         }
+
+        return $results;
     }
 
     /**
@@ -231,6 +261,116 @@ class WhatsAppCloudApiService
             return $this->handleResponse($response, "Template '{$templateName}'");
         } catch (\Exception $e) {
             Log::error('WhatsAppCloudApiService sendTemplateMessage Exception: ' . $e->getMessage());
+            return ['success' => false, 'error' => $e->getMessage(), 'data' => null];
+        }
+    }
+
+    /**
+     * Upload a local file to WhatsApp's media store so it can be referenced by
+     * id in a template/document message, without needing a public URL for it.
+     *
+     * @return array{success: bool, media_id?: string, error?: string}
+     */
+    public function uploadMedia(string $filePath, string $mimeType, string $filename): array
+    {
+        if (!$this->isConfigured()) {
+            Log::error('WhatsAppCloudApiService: Service not configured (phone number ID or access token missing).');
+            return ['success' => false, 'error' => 'WhatsApp Cloud API service not configured.'];
+        }
+
+        $endpoint = "{$this->baseUrl}/{$this->apiVersion}/{$this->phoneNumberId}/media";
+
+        try {
+            $response = Http::withToken($this->accessToken)
+                ->attach('file', file_get_contents($filePath), $filename, ['Content-Type' => $mimeType])
+                ->post($endpoint, [
+                    'messaging_product' => 'whatsapp',
+                    'type' => $mimeType,
+                ]);
+
+            $responseData = $response->json();
+
+            if (!$response->successful() || !isset($responseData['id'])) {
+                $errorMessage = $responseData['error']['message'] ?? ('HTTP Status: ' . $response->status());
+                Log::error("WhatsAppCloudApiService: Failed to upload media. {$errorMessage}", ['response' => $responseData]);
+                return ['success' => false, 'error' => $errorMessage];
+            }
+
+            return ['success' => true, 'media_id' => $responseData['id']];
+        } catch (\Exception $e) {
+            Log::error('WhatsAppCloudApiService uploadMedia Exception: ' . $e->getMessage());
+            return ['success' => false, 'error' => $e->getMessage()];
+        }
+    }
+
+    /**
+     * Send a pre-approved WhatsApp template message whose header is a document
+     * (e.g. a PDF report) — the document must already be uploaded via
+     * uploadMedia() so a media id is available.
+     *
+     * @param array<int, string> $bodyParams Ordered values for the template body's {{1}}, {{2}}, ... placeholders, if any
+     */
+    public function sendDocumentTemplateMessage(
+        string $to,
+        string $templateName,
+        string $languageCode,
+        string $mediaId,
+        string $filename,
+        array $bodyParams = []
+    ): array {
+        if (!$this->isConfigured()) {
+            Log::error('WhatsAppCloudApiService: Service not configured (phone number ID or access token missing).');
+            return ['success' => false, 'error' => 'WhatsApp Cloud API service not configured.', 'data' => null];
+        }
+
+        $formattedTo = self::formatPhoneNumber($to, $this->defaultCountryCode);
+
+        if (!$formattedTo) {
+            return ['success' => false, 'error' => 'Invalid recipient phone number.', 'data' => null];
+        }
+
+        $endpoint = "{$this->baseUrl}/{$this->apiVersion}/{$this->phoneNumberId}/messages";
+
+        $components = [
+            [
+                'type' => 'header',
+                'parameters' => [
+                    [
+                        'type' => 'document',
+                        'document' => ['id' => $mediaId, 'filename' => $filename],
+                    ],
+                ],
+            ],
+        ];
+
+        if (!empty($bodyParams)) {
+            $components[] = [
+                'type' => 'body',
+                'parameters' => array_map(
+                    fn (string $value) => ['type' => 'text', 'text' => $value],
+                    $bodyParams
+                ),
+            ];
+        }
+
+        $payload = [
+            'messaging_product' => 'whatsapp',
+            'to' => $formattedTo,
+            'type' => 'template',
+            'template' => [
+                'name' => $templateName,
+                'language' => ['code' => $languageCode],
+                'components' => $components,
+            ],
+        ];
+
+        try {
+            $response = Http::withToken($this->accessToken)
+                ->post($endpoint, $payload);
+
+            return $this->handleResponse($response, "Document template '{$templateName}'");
+        } catch (\Exception $e) {
+            Log::error('WhatsAppCloudApiService sendDocumentTemplateMessage Exception: ' . $e->getMessage());
             return ['success' => false, 'error' => $e->getMessage(), 'data' => null];
         }
     }

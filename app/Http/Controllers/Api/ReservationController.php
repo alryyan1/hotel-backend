@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Reservation;
+use App\Models\ReservationStatusLog;
 use App\Models\Transaction;
 use App\Services\ReservationSmsService;
 use App\Services\WhatsAppCloudApiService;
@@ -31,11 +32,38 @@ class ReservationController extends Controller
     ) {}
 
     /**
+     * Record a status transition (who changed it and when) for the reservation
+     * timeline shown in the UI.
+     */
+    private function logStatusChange(Reservation $reservation, ?string $fromStatus, string $toStatus, ?int $userId): void
+    {
+        ReservationStatusLog::create([
+            'reservation_id' => $reservation->id,
+            'from_status' => $fromStatus,
+            'to_status' => $toStatus,
+            'user_id' => $userId,
+        ]);
+    }
+
+    /**
+     * Record a room transfer (old room -> new room) for the reservation timeline.
+     */
+    private function logRoomTransfer(Reservation $reservation, string $oldRoomNumber, string $newRoomNumber, ?int $userId): void
+    {
+        ReservationStatusLog::create([
+            'reservation_id' => $reservation->id,
+            'notes' => "تحويل غرفة: من {$oldRoomNumber} إلى {$newRoomNumber}",
+            'user_id' => $userId,
+        ]);
+    }
+
+    /**
      * Display a listing of the resource.
      */
     public function index(Request $request)
     {
-        $query = Reservation::with(['customer', 'rooms.type', 'transactions']);
+        $query = Reservation::with(['customer', 'rooms.type', 'transactions', 'creationLog.user:id,name'])
+            ->withExists(['statusLogs as has_room_transfer' => fn ($q) => $q->whereNotNull('notes')]);
 
         // Search functionality
         if ($request->has('search') && !empty($request->search)) {
@@ -178,6 +206,8 @@ class ReservationController extends Controller
             'status' => $data['status'] ?? 'pending',
         ]);
 
+        $this->logStatusChange($reservation, null, $reservation->status, $request->user()?->id);
+
         $roomsById = \App\Models\Room::whereIn('id', collect($data['rooms'])->pluck('id'))->get()->keyBy('id');
 
         $syncData = collect($data['rooms'])->mapWithKeys(function ($room) use ($data, $roomsById, $currency) {
@@ -237,6 +267,17 @@ class ReservationController extends Controller
     public function show(Reservation $reservation)
     {
         return response()->json($reservation->load(['customer', 'rooms.type', 'transactions']));
+    }
+
+    /**
+     * Status change timeline for the reservation: who changed it and when,
+     * oldest first.
+     */
+    public function statusLogs(Reservation $reservation)
+    {
+        return response()->json(
+            $reservation->statusLogs()->with('user:id,name')->oldest('id')->get()
+        );
     }
 
     /**
@@ -325,12 +366,14 @@ class ReservationController extends Controller
         return response()->json(['message' => 'Deleted']);
     }
 
-    public function confirm(Reservation $reservation)
+    public function confirm(Request $request, Reservation $reservation)
     {
         if ($reservation->status !== 'pending') {
             return response()->json(['message' => 'Only pending reservations can be confirmed'], 422);
         }
+        $fromStatus = $reservation->status;
         $reservation->update(['status' => 'confirmed']);
+        $this->logStatusChange($reservation, $fromStatus, 'confirmed', $request->user()?->id);
 
         $notificationSettings = HotelSetting::first();
         $smsEnabled = $notificationSettings->sms_notifications_enabled ?? true;
@@ -346,6 +389,23 @@ class ReservationController extends Controller
         $responseData = $reservation->load(['customer', 'rooms', 'payments']);
         $responseData->sms_result = $smsResult;
         $responseData->whatsapp_result = $whatsappResult;
+
+        $customerPhone = $responseData->customer->phone ?? null;
+        $responseData->notifications = [
+            'sms' => [
+                'enabled' => $smsEnabled,
+                'recipients' => ($smsEnabled && $customerPhone) ? [[
+                    'phone' => $customerPhone,
+                    'label' => 'العميل',
+                    'success' => (bool) ($smsResult['success'] ?? false),
+                    'error' => $smsResult['error'] ?? null,
+                ]] : [],
+            ],
+            'whatsapp' => [
+                'enabled' => $whatsappEnabled,
+                'recipients' => $whatsappEnabled ? ($whatsappResult['recipients'] ?? []) : [],
+            ],
+        ];
 
         return response()->json($responseData);
     }
@@ -395,7 +455,7 @@ class ReservationController extends Controller
         ]);
     }
 
-    public function checkIn(Reservation $reservation)
+    public function checkIn(Request $request, Reservation $reservation)
     {
         if (! in_array($reservation->status, ['confirmed'])) {
             return response()->json(['message' => 'Reservation must be confirmed to check in'], 422);
@@ -441,12 +501,14 @@ class ReservationController extends Controller
         }
 
         // Update reservation status to checked_in
+        $fromStatus = $reservation->status;
         $reservation->update(['status' => 'checked_in']);
+        $this->logStatusChange($reservation, $fromStatus, 'checked_in', $request->user()?->id);
 
         return response()->json($reservation->fresh()->load(['customer', 'rooms', 'transactions']));
     }
 
-    public function checkOut(Reservation $reservation)
+    public function checkOut(Request $request, Reservation $reservation)
     {
         if ($reservation->status !== 'checked_in') {
             return response()->json(['message' => 'Reservation must be checked in to check out'], 422);
@@ -464,6 +526,15 @@ class ReservationController extends Controller
         $scheduledCheckOut = $reservation->check_out_date instanceof \Carbon\Carbon
             ? $reservation->check_out_date->toDateString()
             : substr($reservation->check_out_date, 0, 10);
+
+        $checkInDateStr = $reservation->check_in_date instanceof \Carbon\Carbon
+            ? $reservation->check_in_date->toDateString()
+            : substr($reservation->check_in_date, 0, 10);
+
+        // Never let an early-checkout backdate check_out_date earlier than
+        // check_in_date (can happen if check-in itself was done ahead of its
+        // scheduled date, e.g. an early/same-day check-in followed by checkout).
+        $newCheckOutDate = max($today, $checkInDateStr);
 
         $isEarlyCheckout = $effectiveCheckoutDate < $scheduledCheckOut;
         $refundAmount    = 0;
@@ -491,7 +562,7 @@ class ReservationController extends Controller
             }
         }
 
-        DB::transaction(function () use ($reservation, $today, $isEarlyCheckout, $refundAmount, $remainingDays, $scheduledCheckOut) {
+        DB::transaction(function () use ($reservation, $today, $newCheckOutDate, $isEarlyCheckout, $refundAmount, $remainingDays, $scheduledCheckOut) {
             foreach ($reservation->rooms as $room) {
                 \App\Models\CleaningNotification::create([
                     'room_id' => $room->id,
@@ -505,7 +576,7 @@ class ReservationController extends Controller
             $updateData = ['status' => 'checked_out'];
 
             if ($isEarlyCheckout) {
-                $updateData['check_out_date'] = $today;
+                $updateData['check_out_date'] = $newCheckOutDate;
 
                 if ($refundAmount > 0) {
                     Transaction::create([
@@ -525,6 +596,8 @@ class ReservationController extends Controller
             $reservation->update($updateData);
         });
 
+        $this->logStatusChange($reservation, 'checked_in', 'checked_out', $request->user()?->id);
+
         $whatsappEnabled = HotelSetting::first()->whatsapp_notifications_enabled ?? true;
         if ($whatsappEnabled) {
             foreach ($reservation->rooms as $room) {
@@ -535,12 +608,14 @@ class ReservationController extends Controller
         return response()->json($reservation->fresh()->load(['customer', 'rooms', 'transactions']));
     }
 
-    public function cancel(Reservation $reservation)
+    public function cancel(Request $request, Reservation $reservation)
     {
         if (in_array($reservation->status, ['checked_in', 'checked_out'])) {
             return response()->json(['message' => 'Cannot cancel after check-in'], 422);
         }
+        $fromStatus = $reservation->status;
         $reservation->update(['status' => 'cancelled']);
+        $this->logStatusChange($reservation, $fromStatus, 'cancelled', $request->user()?->id);
 
         $whatsappEnabled = HotelSetting::first()->whatsapp_notifications_enabled ?? true;
         $whatsappResult = $whatsappEnabled
@@ -651,104 +726,6 @@ class ReservationController extends Controller
         return response()->json($reservation->fresh()->load(['customer', 'rooms', 'transactions']));
     }
 
-    public function updateDates(Request $request, Reservation $reservation)
-    {
-        $data = $request->validate([
-            'check_in_date'  => ['sometimes', 'date'],
-            'check_out_date' => ['sometimes', 'date'],
-        ]);
-
-        if (empty($data)) {
-            return response()->json(['message' => 'لم يتم تحديد تواريخ للتعديل'], 422);
-        }
-
-        $finalCheckIn  = $data['check_in_date']  ?? (
-            $reservation->check_in_date instanceof \Carbon\Carbon
-                ? $reservation->check_in_date->toDateString()
-                : substr($reservation->check_in_date, 0, 10)
-        );
-        $finalCheckOut = $data['check_out_date'] ?? (
-            $reservation->check_out_date instanceof \Carbon\Carbon
-                ? $reservation->check_out_date->toDateString()
-                : substr($reservation->check_out_date, 0, 10)
-        );
-
-        if ($finalCheckOut <= $finalCheckIn) {
-            return response()->json(['message' => 'يجب أن يكون تاريخ المغادرة بعد تاريخ الوصول'], 422);
-        }
-
-        $newDays = (new \DateTime($finalCheckIn))->diff(new \DateTime($finalCheckOut))->days;
-        $newDays = max(1, $newDays);
-
-        $reservation->load(['rooms.type']);
-        $pricePerDay = 0;
-        foreach ($reservation->rooms as $room) {
-            $rate = $room->pivot->rate ?? $room->priceFor($reservation->currency);
-            $pricePerDay += (float) $rate;
-        }
-        $newTotal = $newDays * $pricePerDay;
-
-        DB::transaction(function () use ($reservation, $finalCheckIn, $finalCheckOut, $newTotal, $newDays) {
-            $reservation->check_in_date  = $finalCheckIn;
-            $reservation->check_out_date = $finalCheckOut;
-            $reservation->total_amount   = $newTotal;
-            $reservation->save();
-
-            foreach ($reservation->rooms as $room) {
-                $reservation->rooms()->updateExistingPivot($room->id, [
-                    'check_in_date'  => $finalCheckIn,
-                    'check_out_date' => $finalCheckOut,
-                ]);
-            }
-
-            // Update debit transactions — per-room format (new) or single format (legacy)
-            $debitTransactions = Transaction::where('reservation_id', $reservation->id)
-                ->where('type', 'debit')
-                ->get();
-
-            $isPerRoom = $debitTransactions->contains(fn($t) => str_contains($t->reference ?? '', '-ROOM-'));
-
-            if ($isPerRoom) {
-                // Editing dates collapses any prior pricing segments (e.g. from an earlier
-                // extension) into one fresh segment per room for the new full range,
-                // priced at each room's frozen pivot rate — avoids double-counting old
-                // extension transactions alongside the recomputed total.
-                $debitTransactions->each(fn($t) => $t->delete());
-
-                foreach ($reservation->rooms as $room) {
-                    $rate      = $room->pivot->rate ?? $room->priceFor($reservation->currency);
-                    $roomTotal = $newDays * (float) $rate;
-                    Transaction::create([
-                        'customer_id'      => $reservation->customer_id,
-                        'reservation_id'   => $reservation->id,
-                        'room_id'          => $room->id,
-                        'type'             => 'debit',
-                        'amount'           => $roomTotal,
-                        'rate'             => $rate,
-                        'nights'           => $newDays,
-                        'check_in_date'    => $finalCheckIn,
-                        'check_out_date'   => $finalCheckOut,
-                        'currency'         => $reservation->currency,
-                        'transaction_date' => $finalCheckIn,
-                        'reference'        => 'RES-' . $reservation->id . '-ROOM-' . $room->id,
-                        'notes'            => 'غرفة ' . $room->number,
-                    ]);
-                }
-            } else {
-                $single = $debitTransactions->first();
-                if ($single) {
-                    $single->update([
-                        'amount'           => $newTotal,
-                        'transaction_date' => $finalCheckIn,
-                        'notes'            => "وصول {$finalCheckIn} - مغادرة {$finalCheckOut}",
-                    ]);
-                }
-            }
-        });
-
-        return response()->json($reservation->fresh()->load(['customer', 'rooms.type', 'transactions']));
-    }
-
     public function transferRoom(Request $request, Reservation $reservation)
     {
         $data = $request->validate([
@@ -844,7 +821,12 @@ class ReservationController extends Controller
             $reservation->update(['total_amount' => $total]);
         });
 
-        return response()->json($reservation->fresh()->load(['customer', 'rooms.type', 'transactions']));
+        $this->logRoomTransfer($reservation, $oldRoom->number, $newRoom->number, $request->user()?->id);
+
+        $fresh = $reservation->fresh()->load(['customer', 'rooms.type', 'transactions']);
+        $fresh->setAttribute('has_room_transfer', true);
+
+        return response()->json($fresh);
     }
 
     /**
@@ -1545,94 +1527,12 @@ class ReservationController extends Controller
     /**
      * Printable list of today's arrivals or departures for the front desk.
      */
-    public function exportTodayPdf(string $type): Response
+    public function exportTodayPdf(string $type, \App\Services\ReservationReportPdfService $pdfService): Response
     {
-        $isArrivals = $type === 'arrivals';
-        $dateColumn = $isArrivals ? 'check_in_date' : 'check_out_date';
+        $report = $pdfService->generate($type);
 
-        $reservations = Reservation::whereDate($dateColumn, today())
-            ->where('status', '!=', 'cancelled')
-            ->with(['customer', 'rooms'])
-            ->orderBy($dateColumn)
-            ->get();
-
-        $today = date('d/m/Y');
-        $title = $isArrivals ? 'قائمة الوصول اليوم' : 'قائمة المغادرة اليوم';
-
-        $pdf = new \TCPDF('L', 'mm', 'A4', true, 'UTF-8', false);
-        $pdf->SetCreator('Hotel Management System');
-        $pdf->SetTitle($title);
-        $pdf->setPrintHeader(false);
-        $pdf->setPrintFooter(false);
-        $pdf->SetMargins(15, 15, 15);
-        $pdf->SetAutoPageBreak(true, 15);
-        $pdf->setRTL(true);
-        $pdf->AddPage();
-
-        $settings = HotelSetting::first();
-        $hotelName = ($settings->official_name ?? null) ?: ($settings->trade_name ?? null);
-
-        if ($hotelName) {
-            $pdf->SetFont('arial', 'B', 16);
-            $pdf->Cell(0, 9, $hotelName, 0, 1, 'C');
-        }
-
-        $pdf->SetFont('arial', 'B', 14);
-        $pdf->Cell(0, 8, $title . ' - ' . $today, 0, 1, 'C');
-        $pdf->SetFont('arial', '', 10);
-        $pdf->Cell(0, 7, 'عدد الحجوزات: ' . $reservations->count(), 0, 1, 'C');
-        $pdf->Ln(3);
-
-        $pdf->SetFont('arial', 'B', 10);
-        $pdf->SetFillColor(230, 230, 230);
-
-        $colId = 20;
-        $colGuest = 55;
-        $colPhone = 35;
-        $colRooms = 40;
-        $colCheckIn = 30;
-        $colCheckOut = 30;
-        $colStatus = 30;
-        // Total: 20+55+35+40+30+30+30 = 240mm (fits A4 landscape minus margins)
-
-        $pdf->Cell($colId, 8, 'رقم الحجز', 1, 0, 'C', true);
-        $pdf->Cell($colGuest, 8, 'اسم العميل', 1, 0, 'C', true);
-        $pdf->Cell($colPhone, 8, 'الهاتف', 1, 0, 'C', true);
-        $pdf->Cell($colRooms, 8, 'الغرف', 1, 0, 'C', true);
-        $pdf->Cell($colCheckIn, 8, 'تاريخ الوصول', 1, 0, 'C', true);
-        $pdf->Cell($colCheckOut, 8, 'تاريخ المغادرة', 1, 0, 'C', true);
-        $pdf->Cell($colStatus, 8, 'الحالة', 1, 1, 'C', true);
-
-        $statusLabels = [
-            'pending' => 'في الانتظار',
-            'confirmed' => 'مؤكد',
-            'checked_in' => 'تم تسجيل الوصول',
-            'checked_out' => 'تم تسجيل المغادرة',
-            'cancelled' => 'ملغي',
-        ];
-
-        $pdf->SetFont('arial', '', 9);
-        foreach ($reservations as $reservation) {
-            $roomNumbers = $reservation->rooms->pluck('number')->implode(', ');
-
-            $pdf->Cell($colId, 7, '#' . $reservation->id, 1, 0, 'C');
-            $pdf->Cell($colGuest, 7, $reservation->customer->name ?? '-', 1, 0, 'C');
-            $pdf->Cell($colPhone, 7, $reservation->customer->phone ?? '-', 1, 0, 'C');
-            $pdf->Cell($colRooms, 7, $roomNumbers ?: '-', 1, 0, 'C');
-            $pdf->Cell($colCheckIn, 7, date('d/m/Y', strtotime($reservation->check_in_date)), 1, 0, 'C');
-            $pdf->Cell($colCheckOut, 7, date('d/m/Y', strtotime($reservation->check_out_date)), 1, 0, 'C');
-            $pdf->Cell($colStatus, 7, $statusLabels[$reservation->status] ?? $reservation->status, 1, 1, 'C');
-        }
-
-        if ($reservations->isEmpty()) {
-            $pdf->SetFont('arial', '', 10);
-            $pdf->Cell(0, 10, $isArrivals ? 'لا يوجد وصول اليوم' : 'لا يوجد مغادرة اليوم', 0, 1, 'C');
-        }
-
-        $filename = ($isArrivals ? 'arrivals_' : 'departures_') . date('Y-m-d') . '.pdf';
-
-        return response($pdf->Output($filename, 'S'), 200)
+        return response($report['content'], 200)
             ->header('Content-Type', 'application/pdf')
-            ->header('Content-Disposition', 'attachment; filename="' . $filename . '"');
+            ->header('Content-Disposition', 'attachment; filename="' . $report['filename'] . '"');
     }
 }

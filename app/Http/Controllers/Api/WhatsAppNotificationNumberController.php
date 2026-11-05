@@ -9,7 +9,7 @@ use Illuminate\Validation\Rule;
 
 class WhatsAppNotificationNumberController extends Controller
 {
-    private const EVENTS = ['confirmation', 'cancellation', 'cleaning'];
+    private const EVENTS = ['confirmation', 'cancellation', 'cleaning', 'arrivals_report', 'departures_report'];
 
     public function index(Request $request)
     {

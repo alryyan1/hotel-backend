@@ -10,3 +10,6 @@ Artisan::command('inspire', function () {
 
 // Schedule cleaning notifications check daily
 Schedule::command('cleaning:check-notifications')->daily();
+
+// Send today's arrivals/departures PDF reports over WhatsApp every morning
+Schedule::command('reports:send-today')->dailyAt('08:00');

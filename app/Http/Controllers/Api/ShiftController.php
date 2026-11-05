@@ -150,13 +150,17 @@ class ShiftController extends Controller
 
         $this->pdfMethodTable($pdf, $summary);
 
+        $pdf->Ln(3);
+        $pdf->SetFont('arial', 'B', 11);
+        $pdf->Cell(0, 8, 'إجمالي الإيراد كاش (دولار) المستلم: ' . $this->money($summary['total_revenue_usd_cash'] ?? 0) . ' $', 0, 1, 'R');
+
         if ($users) {
             $pdf->Ln(6);
             $pdf->SetFont('arial', 'B', 12);
             $pdf->Cell(0, 9, 'إيرادات المستخدمين', 0, 1, 'R');
             $pdf->SetFont('arial', 'B', 10);
             $pdf->SetFillColor(230, 230, 230);
-            $headers = ['المستخدم' => 38, 'مدفوعات الحجوزات' => 38, 'الخدمات' => 33, 'مسترجع' => 33, 'الصافي' => 33];
+            $headers = ['المستخدم' => 32, 'مدفوعات الحجوزات (SDG)' => 33, 'الخدمات' => 27, 'مسترجع' => 27, 'الصافي (SDG)' => 27, 'كاش $ مستلم' => 29];
             foreach ($headers as $label => $width) {
                 $pdf->Cell($width, 9, $label, 1, 0, 'C', true);
             }
@@ -164,11 +168,12 @@ class ShiftController extends Controller
             $pdf->SetFont('arial', '', 10);
             foreach ($users as $row) {
                 $s = $row['summary'];
-                $pdf->Cell(38, 8, $row['name'], 1, 0, 'C');
-                $pdf->Cell(38, 8, $this->money($s['total_revenue']), 1, 0, 'C');
-                $pdf->Cell(33, 8, $this->money($s['total_service_revenue']), 1, 0, 'C');
-                $pdf->Cell(33, 8, $this->money($s['total_refunds']), 1, 0, 'C');
-                $pdf->Cell(33, 8, $this->money($s['net_profit']), 1, 1, 'C');
+                $pdf->Cell(32, 8, $row['name'], 1, 0, 'C');
+                $pdf->Cell(33, 8, $this->money($s['total_revenue']), 1, 0, 'C');
+                $pdf->Cell(27, 8, $this->money($s['total_service_revenue']), 1, 0, 'C');
+                $pdf->Cell(27, 8, $this->money($s['total_refunds']), 1, 0, 'C');
+                $pdf->Cell(27, 8, $this->money($s['net_profit']), 1, 0, 'C');
+                $pdf->Cell(29, 8, $this->money($s['total_revenue_usd_cash'] ?? 0), 1, 1, 'C');
             }
         }
 
