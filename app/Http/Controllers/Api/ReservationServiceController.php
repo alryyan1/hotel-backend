@@ -32,23 +32,27 @@ class ReservationServiceController extends Controller
             'reservation_id' => 'required|exists:reservations,id',
             'room_id' => 'required|exists:rooms,id',
             'service_id' => 'required|exists:services,id',
-            'amount' => 'nullable|numeric|min:0',
+            'amount' => 'required|numeric|min:0',
+            'amount_usd' => 'nullable|numeric|min:0',
             'payment_method' => 'nullable|string',
             'notes' => 'nullable|string|max:1000',
         ]);
+
+        $reservation = \App\Models\Reservation::find($validated['reservation_id']);
+        $validated['currency'] = ReservationService::currencyFor($reservation, $validated['amount_usd'] ?? null);
 
         $reservationService = ReservationService::create($validated);
         $reservationService->load(['reservation.customer', 'room', 'service']);
 
         // Always create a debit transaction so the service appears in the customer's ledger
-        $reservation = $reservationService->reservation;
         if ($reservation && $reservation->customer_id) {
             Transaction::create([
                 'customer_id'            => $reservation->customer_id,
                 'reservation_id'         => $reservation->id,
                 'reservation_service_id' => $reservationService->id,
                 'type'                   => 'debit',
-                'amount'                 => $reservationService->amount ?? 0,
+                'amount'                 => $reservationService->billed_amount,
+                'currency'               => $reservationService->currency,
                 'transaction_date'       => now(),
                 'notes'                  => $reservationService->service->name ?? 'خدمة',
             ]);
@@ -68,21 +72,27 @@ class ReservationServiceController extends Controller
             'room_id' => 'sometimes|exists:rooms,id',
             'service_id' => 'sometimes|exists:services,id',
             'amount' => 'sometimes|numeric|min:0',
+            'amount_usd' => 'nullable|numeric|min:0',
             'payment_method' => 'nullable|string',
             'notes' => 'nullable|string|max:1000',
         ]);
 
+        $amountUsd = array_key_exists('amount_usd', $validated) ? $validated['amount_usd'] : $reservationService->amount_usd;
+        $validated['currency'] = ReservationService::currencyFor($reservationService->reservation, $amountUsd);
+
         $reservationService->update($validated);
         $reservationService->refresh()->load(['reservation.customer', 'room', 'service', 'transaction']);
 
-        $newAmount = $reservationService->amount ?? 0;
+        $newAmount = $reservationService->billed_amount;
+        $newCurrency = $reservationService->currency;
         $serviceName = $reservationService->service->name ?? 'خدمة';
 
         if ($reservationService->transaction) {
             // Update existing transaction
             $reservationService->transaction->update([
-                'amount' => $newAmount,
-                'notes'  => $serviceName,
+                'amount'   => $newAmount,
+                'currency' => $newCurrency,
+                'notes'    => $serviceName,
             ]);
         } else {
             // No transaction yet (old data) — create one now
@@ -94,6 +104,7 @@ class ReservationServiceController extends Controller
                     'reservation_service_id' => $reservationService->id,
                     'type'                   => 'debit',
                     'amount'                 => $newAmount,
+                    'currency'               => $newCurrency,
                     'transaction_date'       => now(),
                     'notes'                  => $serviceName,
                 ]);
@@ -220,6 +231,7 @@ class ReservationServiceController extends Controller
             'الغرفة'         => $reservationService->room->number ?? '-',
             'الخدمة'         => $reservationService->service->name ?? '-',
             'طريقة الدفع'   => $methodLabels[$reservationService->payment_method] ?? ($reservationService->payment_method ?? '-'),
+            'العملة'         => $reservationService->currency === 'USD' ? 'دولار (USD)' : 'جنيه سوداني (SDG)',
         ];
         if ($reservationService->notes) {
             $serviceRows['ملاحظات'] = $reservationService->notes;
@@ -241,7 +253,7 @@ class ReservationServiceController extends Controller
         $pdf->Cell($labelW, 10, 'المبلغ المدفوع', 1, 0, 'C', true);
         $pdf->SetFillColor(255, 255, 255);
         $pdf->SetFont('arial', 'B', 13);
-        $pdf->Cell($valueW, 10, number_format($reservationService->amount, 0, '.', ','), 1, 1, 'C', true);
+        $pdf->Cell($valueW, 10, number_format($reservationService->billed_amount, $reservationService->currency === 'USD' ? 2 : 0, '.', ',') . ' ' . $reservationService->currency, 1, 1, 'C', true);
 
         // Stamp
         $pdf->SetAutoPageBreak(false);

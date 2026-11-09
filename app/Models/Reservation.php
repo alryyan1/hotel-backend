@@ -56,6 +56,9 @@ class Reservation extends Model
         'checkout_reminder_sent_at' => 'datetime',
     ];
 
+    // Old rooms stay visible after a transfer, whichever endpoint returns the reservation
+    protected $with = ['transferredRooms'];
+
     public function customer(): BelongsTo
     {
         return $this->belongsTo(Customer::class);
@@ -75,10 +78,41 @@ class Reservation extends Model
         return $this->hasOne(ReservationStatusLog::class)->whereNull('from_status')->oldest('id');
     }
 
+    /**
+     * The rooms the reservation holds now: rooms it was transferred out of are excluded.
+     */
     public function rooms(): BelongsToMany
     {
+        return $this->stayRooms()->wherePivotNull('transferred_at');
+    }
+
+    /**
+     * Rooms the guest stayed in earlier, kept with the dates spent in each one.
+     */
+    public function transferredRooms(): BelongsToMany
+    {
+        return $this->stayRooms()->wherePivotNotNull('transferred_at');
+    }
+
+    /**
+     * Rooms that block availability: a transferred room is still taken for the nights
+     * spent in it, unless the guest moved out before spending any night there.
+     */
+    public function occupyingRooms(): BelongsToMany
+    {
+        return $this->stayRooms()->where(function ($q) {
+            $q->whereNull('reservation_room.transferred_at')
+                ->orWhereColumn('reservation_room.check_in_date', '<', 'reservation_room.check_out_date');
+        });
+    }
+
+    /**
+     * Every room of the stay, current and transferred.
+     */
+    public function stayRooms(): BelongsToMany
+    {
         return $this->belongsToMany(Room::class)
-            ->withPivot(['check_in_date', 'check_out_date', 'rate', 'currency'])
+            ->withPivot(['check_in_date', 'check_out_date', 'rate', 'currency', 'transferred_at', 'transferred_to_room_id'])
             ->withTimestamps();
     }
 

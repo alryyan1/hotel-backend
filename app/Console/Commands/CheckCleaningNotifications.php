@@ -33,7 +33,8 @@ class CheckCleaningNotifications extends Command
 
         // Get all rooms with their active reservations
         $rooms = Room::with(['reservations' => function($query) {
-            $query->where('reservations.status', 'checked_in')
+            $query->wherePivotNull('transferred_at')
+                ->where('reservations.status', 'checked_in')
                 ->where('reservations.check_in_date', '<=', now()->toDateString())
                 ->where('reservations.check_out_date', '>=', now()->toDateString());
         }])->get();

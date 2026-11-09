@@ -17,6 +17,7 @@ class Transaction extends Model
         'reservation_service_id',
         'room_id',
         'type',
+        'operation_type',
         'amount',
         'rate',
         'nights',
@@ -34,6 +35,16 @@ class Transaction extends Model
         'check_in_date' => 'date',
         'check_out_date' => 'date',
     ];
+
+    /**
+     * A room transfer's price difference: its amount is not nights x rate, and its
+     * rate is the nightly price the guest pays from the transfer on.
+     */
+    public function isTransferDifference(): bool
+    {
+        return $this->operation_type === 'transfer'
+            || (str_starts_with($this->reference ?? '', 'TRF-') && str_starts_with($this->notes ?? '', 'تحويل'));
+    }
 
     public function customer(): BelongsTo
     {

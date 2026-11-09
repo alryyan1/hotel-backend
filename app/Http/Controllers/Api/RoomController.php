@@ -25,6 +25,11 @@ class RoomController extends Controller
                 }
                 // فقط الحجوزات النشطة تمنع الغرفة (الملغاة والمغادَرة لا تحجز الغرفة)
                 $q->whereNotIn('reservations.status', ['cancelled', 'checked_out']);
+                // غرفة تم التحويل منها قبل قضاء أي ليلة فيها لا تحجز الغرفة
+                $q->where(function ($p) {
+                    $p->whereNull('reservation_room.transferred_at')
+                      ->orWhereColumn('reservation_room.check_in_date', '<', 'reservation_room.check_out_date');
+                });
                 $q->where(function ($p) use ($checkIn, $checkOut) {
                     $p->where(function ($x) use ($checkIn, $checkOut) {
                         $x->where('reservation_room.check_in_date', '<', $checkOut)
@@ -84,7 +89,7 @@ class RoomController extends Controller
                 'number' => 'required|string|max:10|unique:rooms,number',
                 'floor_id' => 'required|exists:floors,id',
                 'room_type_id' => 'required|exists:room_types,id',
-                'price_usd' => 'required|numeric|min:0',
+                'price_usd' => 'nullable|numeric|min:0',
                 'price_sdg' => 'required|numeric|min:0',
                 'room_status_id' => 'required|exists:room_statuses,id',
                 'beds' => 'required|integer|min:1|max:10',
@@ -121,7 +126,7 @@ class RoomController extends Controller
                 'number' => 'required|string|max:10|unique:rooms,number,' . $room->id,
                 'floor_id' => 'required|exists:floors,id',
                 'room_type_id' => 'required|exists:room_types,id',
-                'price_usd' => 'required|numeric|min:0',
+                'price_usd' => 'nullable|numeric|min:0',
                 'price_sdg' => 'required|numeric|min:0',
                 'room_status_id' => 'required|exists:room_statuses,id',
                 'beds' => 'required|integer|min:1|max:10',

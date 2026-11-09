@@ -76,7 +76,7 @@ class ReservationController extends Controller
                         ->orWhere('email', 'like', "%{$searchTerm}%");
                 })
                     // Search in room numbers
-                    ->orWhereHas('rooms', function ($roomQuery) use ($searchTerm) {
+                    ->orWhereHas('stayRooms', function ($roomQuery) use ($searchTerm) {
                         $roomQuery->where('number', 'like', "%{$searchTerm}%");
                     })
                     // Search in reservation ID
@@ -173,10 +173,15 @@ class ReservationController extends Controller
         // The whole reservation bills in a single currency, fixed at booking time.
         $currency = $data['currency'] ?? 'SDG';
 
+        // Rooms without a USD price can only be billed in SDG.
+        if ($currency === 'USD' && \App\Models\Room::whereIn('id', collect($data['rooms'])->pluck('id'))->whereNull('price_usd')->exists()) {
+            $currency = 'SDG';
+        }
+
         // Check overlap for each requested room
         foreach ($data['rooms'] as $roomReq) {
             $overlap = Reservation::query()
-                ->whereHas('rooms', function ($q) use ($roomReq, $data) {
+                ->whereHas('occupyingRooms', function ($q) use ($roomReq, $data) {
                     $q->where('rooms.id', $roomReq['id'])
                       ->where(function($p) use ($roomReq, $data) {
                           $ci = $roomReq['check_in_date'] ?? $data['check_in_date'];
@@ -198,67 +203,72 @@ class ReservationController extends Controller
             }
         }
 
-        $reservation = Reservation::create([
-            'customer_id' => $data['customer_id'],
-            'check_in_date' => $data['check_in_date'],
-            'check_out_date' => $data['check_out_date'],
-            'currency' => $currency,
-            'status' => $data['status'] ?? 'pending',
-        ]);
-
-        $this->logStatusChange($reservation, null, $reservation->status, $request->user()?->id);
-
         $roomsById = \App\Models\Room::whereIn('id', collect($data['rooms'])->pluck('id'))->get()->keyBy('id');
 
-        $syncData = collect($data['rooms'])->mapWithKeys(function ($room) use ($data, $roomsById, $currency) {
-            $roomModel = $roomsById[$room['id']] ?? null;
-            $frozenRate = $room['rate'] ?? ($roomModel ? $roomModel->priceFor($currency) : 0);
+        // Each room gets its own reservation (own number, debit and lifecycle);
+        // all-or-nothing so a failure never leaves only some of the rooms booked.
+        $reservations = DB::transaction(function () use ($data, $roomsById, $currency, $request) {
+            $created = collect();
 
-            return [
-                $room['id'] => [
-                    'check_in_date' => $room['check_in_date'] ?? $data['check_in_date'],
-                    'check_out_date' => $room['check_out_date'] ?? $data['check_out_date'],
-                    'rate' => $frozenRate,
+            foreach ($data['rooms'] as $roomReq) {
+                $room = $roomsById[$roomReq['id']];
+                $roomCheckIn = $roomReq['check_in_date'] ?? $data['check_in_date'];
+                $roomCheckOut = $roomReq['check_out_date'] ?? $data['check_out_date'];
+                $days = max(1, (new \DateTime($roomCheckIn))->diff(new \DateTime($roomCheckOut))->days);
+
+                // Freeze the price used at booking time
+                $basePrice = $roomReq['rate'] ?? $room->priceFor($currency);
+                $roomAmount = $days * $basePrice;
+
+                $reservation = Reservation::create([
+                    'customer_id' => $data['customer_id'],
+                    'check_in_date' => $roomCheckIn,
+                    'check_out_date' => $roomCheckOut,
                     'currency' => $currency,
-                ],
-            ];
-        })->toArray();
+                    'status' => $data['status'] ?? 'pending',
+                ]);
 
-        $reservation->rooms()->sync($syncData);
+                $this->logStatusChange($reservation, null, $reservation->status, $request->user()?->id);
 
-        // Create one debit transaction per room, freezing the price used at booking time
-        $reservation->load(['rooms.type']);
+                $reservation->rooms()->sync([
+                    $room->id => [
+                        'check_in_date' => $roomCheckIn,
+                        'check_out_date' => $roomCheckOut,
+                        'rate' => $basePrice,
+                        'currency' => $currency,
+                    ],
+                ]);
 
-        $totalDebit = 0;
-        foreach ($reservation->rooms as $room) {
-            $roomCheckIn = $room->pivot->check_in_date ?? $reservation->check_in_date;
-            $roomCheckOut = $room->pivot->check_out_date ?? $reservation->check_out_date;
-            $days = max(1, (new \DateTime($roomCheckIn))->diff(new \DateTime($roomCheckOut))->days);
+                Transaction::create([
+                    'customer_id'      => $reservation->customer_id,
+                    'reservation_id'   => $reservation->id,
+                    'room_id'          => $room->id,
+                    'type'             => 'debit',
+                    'amount'           => $roomAmount,
+                    'rate'             => $basePrice,
+                    'nights'           => $days,
+                    'check_in_date'    => $roomCheckIn,
+                    'check_out_date'   => $roomCheckOut,
+                    'currency'         => $currency,
+                    'transaction_date' => $reservation->check_in_date,
+                    'reference'        => 'RES-' . $reservation->id . '-ROOM-' . $room->id,
+                    'notes'            => 'غرفة ' . $room->number,
+                ]);
 
-            $basePrice = $room->pivot->rate ?? $room->priceFor($currency);
-            $roomAmount = $days * $basePrice;
-            $totalDebit += $roomAmount;
+                $reservation->update(['total_amount' => $roomAmount]);
 
-            Transaction::create([
-                'customer_id'      => $reservation->customer_id,
-                'reservation_id'   => $reservation->id,
-                'room_id'          => $room->id,
-                'type'             => 'debit',
-                'amount'           => $roomAmount,
-                'rate'             => $basePrice,
-                'nights'           => $days,
-                'check_in_date'    => $roomCheckIn,
-                'check_out_date'   => $roomCheckOut,
-                'currency'         => $currency,
-                'transaction_date' => $reservation->check_in_date,
-                'reference'        => 'RES-' . $reservation->id . '-ROOM-' . $room->id,
-                'notes'            => 'غرفة ' . $room->number,
-            ]);
-        }
+                $created->push($reservation->load(['customer', 'rooms', 'transactions']));
+            }
 
-        $reservation->update(['total_amount' => $totalDebit]);
+            return $created;
+        });
 
-        return response()->json($reservation->load(['customer', 'rooms', 'transactions']), 201);
+        // The first reservation stays the top-level body for existing clients;
+        // `reservations` lists every reservation created (one per room).
+        return response()->json(
+            $reservations->first()->toArray() + ['reservations' => $reservations->values()->toArray()],
+            201
+        );
     }
 
     /**
@@ -297,6 +307,11 @@ class ReservationController extends Controller
             'rooms.*.rate' => ['nullable', 'numeric', 'min:0'],
         ]);
 
+        // A room can appear only once per reservation, and its transferred row must stay
+        if (isset($data['rooms']) && collect($data['rooms'])->pluck('id')->intersect($reservation->transferredRooms->pluck('id'))->isNotEmpty()) {
+            return response()->json(['message' => 'لا يمكن إعادة غرفة تم التحويل منها إلى نفس الحجز'], 422);
+        }
+
         // If dates or rooms changed, re-validate overlaps
         if (isset($data['rooms']) || isset($data['check_in_date']) || isset($data['check_out_date'])) {
             $ciBase = $data['check_in_date'] ?? $reservation->check_in_date;
@@ -308,7 +323,7 @@ class ReservationController extends Controller
                 $overlap = Reservation::query()
                     ->where('id', '<>', $reservation->id)
                     ->whereNotIn('status', ['cancelled', 'checked_out'])
-                    ->whereHas('rooms', function ($q) use ($roomReq, $ci, $co) {
+                    ->whereHas('occupyingRooms', function ($q) use ($roomReq, $ci, $co) {
                         $q->where('rooms.id', $roomReq['id'])
                             ->where(function ($p) use ($ci, $co) {
                                 $p->where(function ($x) use ($ci, $co) {
@@ -655,7 +670,7 @@ class ReservationController extends Controller
             $overlap = Reservation::query()
                 ->where('id', '<>', $reservation->id)
                 ->whereNotIn('status', ['cancelled', 'checked_out'])
-                ->whereHas('rooms', function ($q) use ($room, $oldCheckOut, $newCheckOut) {
+                ->whereHas('occupyingRooms', function ($q) use ($room, $oldCheckOut, $newCheckOut) {
                     $q->where('rooms.id', $room->id)
                         ->where(function ($p) use ($oldCheckOut, $newCheckOut) {
                             $p->where(function ($x) use ($oldCheckOut, $newCheckOut) {
@@ -717,6 +732,7 @@ class ReservationController extends Controller
                         'reservation_id' => $reservation->id,
                         'room_id' => $room->id,
                         'type' => 'debit',
+                        'operation_type' => 'extension',
                         'amount' => $roomExtraAmount,
                         'rate' => $roomRates[$room->id],
                         'nights' => $extraDays,
@@ -750,7 +766,8 @@ class ReservationController extends Controller
             return response()->json(['message' => 'الغرفة القديمة غير موجودة في هذا الحجز'], 422);
         }
 
-        if ($reservation->rooms()->where('rooms.id', $data['new_room_id'])->exists()) {
+        // Includes rooms already transferred out of: returning to one is not supported
+        if ($reservation->stayRooms()->where('rooms.id', $data['new_room_id'])->exists()) {
             return response()->json(['message' => 'الغرفة الجديدة موجودة بالفعل في هذا الحجز'], 422);
         }
 
@@ -759,8 +776,8 @@ class ReservationController extends Controller
         $ci = $ci instanceof \Carbon\Carbon ? $ci->toDateString() : substr($ci, 0, 10);
         $co = $co instanceof \Carbon\Carbon ? $co->toDateString() : substr($co, 0, 10);
 
-        // A guest already in-house moves from tonight on: nights already spent stay
-        // on the old room at their frozen price. Before check-in the whole stay moves.
+        // A guest already in-house moves from tonight on, and the old room keeps the
+        // nights already spent. Otherwise the new room takes the whole stay.
         $today = now()->toDateString();
         $from  = $reservation->status === 'checked_in' && $today > $ci ? $today : $ci;
 
@@ -772,7 +789,7 @@ class ReservationController extends Controller
         $overlap = Reservation::query()
             ->where('id', '<>', $reservation->id)
             ->whereNotIn('status', ['cancelled', 'checked_out'])
-            ->whereHas('rooms', function ($q) use ($data, $from, $co) {
+            ->whereHas('occupyingRooms', function ($q) use ($data, $from, $co) {
                 $q->where('rooms.id', $data['new_room_id'])
                     ->where(function ($p) use ($from, $co) {
                         $p->where(function ($x) use ($from, $co) {
@@ -796,19 +813,11 @@ class ReservationController extends Controller
 
         DB::transaction(function () use ($reservation, $oldRoom, $newRoom, $ci, $co, $from) {
             $newRate = (float) $newRoom->priceFor($reservation->currency);
+            $oldRate = (float) ($oldRoom->pivot->rate ?? $oldRoom->priceFor($reservation->currency));
             $nightsBetween = fn (string $start, string $end) => (new \DateTime($start))->diff(new \DateTime($end))->days;
 
-            // Swap rooms in pivot
-            $reservation->rooms()->detach($oldRoom->id);
-            $reservation->rooms()->attach($newRoom->id, [
-                'check_in_date'  => $from,
-                'check_out_date' => $co,
-                'rate'           => $newRate,
-                'currency'       => $reservation->currency,
-            ]);
-
-            // Booking and extension debits of the old room. Rows migrated from the old
-            // per-reservation format have no room_id, only the per-room reference.
+            // Booking, extension and earlier transfer debits of the old room. Rows migrated
+            // from the old per-reservation format have no room_id, only the per-room reference.
             $segments = Transaction::where('reservation_id', $reservation->id)
                 ->where('type', 'debit')
                 ->whereNull('reservation_service_id')
@@ -821,11 +830,12 @@ class ReservationController extends Controller
                 })
                 ->get();
 
-            // Split each segment at the transfer date, so past nights keep their price
-            // and only the coming nights are charged at the new room's rate.
-            $amountChange = 0;
+            // Price difference of the coming nights, each at the price it is charged at now
+            $totalNights = $nightsBetween($from, $co);
+            $coveredNights = 0;
+            $difference = 0;
             foreach ($segments as $segment) {
-                $segmentRate = (float) ($segment->rate ?? $oldRoom->pivot->rate ?? 0);
+                $segmentRate = (float) ($segment->rate ?? $oldRate);
                 $segmentIn   = $segment->check_in_date?->toDateString() ?? $ci;
                 $segmentOut  = $segment->check_out_date?->toDateString();
 
@@ -840,48 +850,49 @@ class ReservationController extends Controller
                 }
 
                 $movedNights = $nightsBetween(max($segmentIn, $from), $segmentOut);
-                $movedFields = [
-                    'room_id'        => $newRoom->id,
-                    'amount'         => $movedNights * $newRate,
-                    'rate'           => $newRate,
-                    'nights'         => $movedNights,
-                    'check_in_date'  => max($segmentIn, $from),
-                    'check_out_date' => $segmentOut,
-                    'notes'          => 'غرفة ' . $newRoom->number,
-                ];
-                $oldAmount = (float) $segment->amount;
-
-                if ($segmentIn < $from) {
-                    $keptNights = $nightsBetween($segmentIn, $from);
-                    $keptAmount = round($keptNights * $segmentRate, 2);
-
-                    $segment->update([
-                        'room_id'        => $oldRoom->id,
-                        'amount'         => $keptAmount,
-                        'rate'           => $segmentRate,
-                        'nights'         => $keptNights,
-                        'check_in_date'  => $segmentIn,
-                        'check_out_date' => $from,
-                    ]);
-
-                    Transaction::create($movedFields + [
-                        'customer_id'      => $reservation->customer_id,
-                        'reservation_id'   => $reservation->id,
-                        'type'             => 'debit',
-                        'currency'         => $segment->currency,
-                        'transaction_date' => $from,
-                        'reference'        => 'TRF-' . $reservation->id . '-ROOM-' . $newRoom->id . '-' . $segment->id,
-                    ]);
-
-                    $amountChange += $keptAmount + $movedFields['amount'] - $oldAmount;
-                } else {
-                    $segment->update($movedFields);
-                    $amountChange += $movedFields['amount'] - $oldAmount;
-                }
+                $coveredNights += $movedNights;
+                $difference += round($movedNights * ($newRate - $segmentRate), 2);
             }
 
+            // Nights with no charge row of their own, e.g. a reservation without per-room charges
+            $difference += round(max(0, $totalNights - $coveredNights) * ($newRate - $oldRate), 2);
+
+            // The old room's row stays on the reservation, ending at the transfer date
+            $reservation->rooms()->updateExistingPivot($oldRoom->id, [
+                'check_out_date'         => $from,
+                'transferred_at'         => now(),
+                'transferred_to_room_id' => $newRoom->id,
+            ]);
+
+            $reservation->rooms()->attach($newRoom->id, [
+                'check_in_date'  => $from,
+                'check_out_date' => $co,
+                'rate'           => $newRate,
+                'currency'       => $reservation->currency,
+            ]);
+
+            // The old charges stay as they are. Every transfer adds a debit with the difference,
+            // even a zero one, so it shows on the statement. A cheaper room gives a negative
+            // debit: a credit would count as money received.
+            Transaction::create([
+                'customer_id'      => $reservation->customer_id,
+                'reservation_id'   => $reservation->id,
+                'room_id'          => $newRoom->id,
+                'type'             => 'debit',
+                'operation_type'   => 'transfer',
+                'amount'           => $difference,
+                'rate'             => $newRate,
+                'nights'           => $totalNights,
+                'check_in_date'    => $from,
+                'check_out_date'   => $co,
+                'currency'         => $reservation->currency,
+                'transaction_date' => $from,
+                'reference'        => 'TRF-' . $reservation->id . '-ROOM-' . $newRoom->id . '-' . time(),
+                'notes'            => "تحويل من غرفة {$oldRoom->number} إلى غرفة {$newRoom->number}: {$totalNights} ليلة (فرق " . number_format($difference, 2) . ')',
+            ]);
+
             // Apply the difference only: other rooms and extensions are left untouched
-            $reservation->update(['total_amount' => (float) $reservation->total_amount + $amountChange]);
+            $reservation->update(['total_amount' => (float) $reservation->total_amount + $difference]);
         });
 
         $this->logRoomTransfer($reservation, $oldRoom->number, $newRoom->number, $from, $request->user()?->id);
@@ -908,7 +919,7 @@ class ReservationController extends Controller
                         ->orWhere('phone', 'like', "%{$searchTerm}%")
                         ->orWhere('email', 'like', "%{$searchTerm}%");
                 })
-                    ->orWhereHas('rooms', function ($roomQuery) use ($searchTerm) {
+                    ->orWhereHas('stayRooms', function ($roomQuery) use ($searchTerm) {
                         $roomQuery->where('number', 'like', "%{$searchTerm}%");
                     })
                     ->orWhere('id', 'like', "%{$searchTerm}%");
@@ -1188,7 +1199,7 @@ class ReservationController extends Controller
     public function exportInvoicePdf(Reservation $reservation): Response
     {
         // Load reservation with relations
-        $reservation->load(['customer', 'rooms.type', 'transactions']);
+        $reservation->load(['customer', 'rooms.type', 'stayRooms', 'transactions']);
 
         // Build invoice line items from the reservation's priced debit segments
         // (original booking + any extensions), so a room whose price changed
@@ -1204,9 +1215,11 @@ class ReservationController extends Controller
 
         if ($debitSegments->isNotEmpty()) {
             foreach ($debitSegments as $segment) {
-                $room = $reservation->rooms->firstWhere('id', $segment->room_id);
+                $room = $reservation->stayRooms->firstWhere('id', $segment->room_id);
                 $nights = $segment->nights ?? 1;
-                $rate = $segment->rate ?? ($nights > 0 ? $segment->amount / $nights : $segment->amount);
+                $rate = $segment->isTransferDifference()
+                    ? $segment->amount / max(1, $nights)
+                    : ($segment->rate ?? ($nights > 0 ? $segment->amount / $nights : $segment->amount));
                 $segCheckIn = $segment->check_in_date
                     ? date('Y/m/d', strtotime($segment->check_in_date))
                     : date('Y/m/d', strtotime($reservation->check_in_date));
@@ -1270,7 +1283,7 @@ class ReservationController extends Controller
             'transaction_id' => ['required', 'integer'],
         ]);
 
-        $reservation->load(['customer', 'rooms.type']);
+        $reservation->load(['customer', 'rooms.type', 'stayRooms']);
 
         $anchorTx = Transaction::where('id', $data['transaction_id'])
             ->where('reservation_id', $reservation->id)
@@ -1286,13 +1299,14 @@ class ReservationController extends Controller
             ->whereNotNull('room_id')
             ->where('check_in_date', $anchorTx->check_in_date)
             ->where('check_out_date', $anchorTx->check_out_date)
-            ->get();
+            ->get()
+            ->reject(fn ($segment) => $segment->isTransferDifference());
 
         $totalAmount = 0;
         $roomDetails = [];
 
         foreach ($segments as $segment) {
-            $room = $reservation->rooms->firstWhere('id', $segment->room_id);
+            $room = $reservation->stayRooms->firstWhere('id', $segment->room_id);
             $nights = $segment->nights ?? 1;
             $rate = $segment->rate ?? ($nights > 0 ? $segment->amount / $nights : $segment->amount);
 

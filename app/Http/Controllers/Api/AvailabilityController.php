@@ -24,7 +24,8 @@ class AvailabilityController extends Controller
 
         $query = Room::query()
             ->with(['type', 'status', 'floor', 'reservations' => function ($q) {
-                $q->whereNotIn('status', ['checked_out', 'cancelled'])
+                $q->wherePivotNull('transferred_at')
+                  ->whereNotIn('status', ['checked_out', 'cancelled'])
                   ->with('customer:id,name')
                   ->orderBy('check_out_date', 'desc');
             }])
@@ -43,7 +44,9 @@ class AvailabilityController extends Controller
 
             // No currency is chosen yet at search time, so surface both rates
             // and let the reservation-creation step pick one for the whole bill.
-            $priceUsd = $room->price_usd ?? 0;
+            // A room may have no USD rate at all (SDG-only); keep that as null so
+            // the client can tell "no USD price" apart from a genuine 0.
+            $priceUsd = $room->price_usd;
             $priceSdg = $room->price_sdg ?? 0;
 
             $roomData = [
@@ -55,7 +58,7 @@ class AvailabilityController extends Controller
                 'is_occupied' => $isOccupied,
                 'price_usd' => $priceUsd,
                 'price_sdg' => $priceSdg,
-                'total_price_usd' => $priceUsd * $days,
+                'total_price_usd' => $priceUsd === null ? null : $priceUsd * $days,
                 'total_price_sdg' => $priceSdg * $days,
                 'current_reservation' => null,
             ];

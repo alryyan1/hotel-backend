@@ -15,8 +15,8 @@ class FinancialSummaryService
      * Ocash, fawri) — USD reservations can only ever be paid in physical cash
      * (enforced in TransactionController::store), so USD revenue is reported as
      * one "cash received" total rather than a method breakdown. Reservation
-     * services carry no currency of their own, so service revenue is bucketed
-     * under SDG (the currency almost all services are actually billed in).
+     * services are split by their billed currency: SDG services feed the SDG
+     * figures, USD services are totalled separately (total_service_revenue_usd).
      *
      * @param  array<string, mixed>  $scope  Extra where-clauses applied to every source table (e.g. shift_id, user_id)
      */
@@ -92,6 +92,10 @@ class FinancialSummaryService
             $serviceQuery->where('created_at', '<=', $dateTo);
         }
 
+        // Services billed in USD are reported apart, never summed with SDG.
+        $totalServiceRevenueUsd = (float) $serviceQuery->clone()->where('currency', 'USD')->sum('amount_usd');
+        $serviceQuery->where('currency', 'SDG');
+
         // Get service revenue breakdown by method
         $serviceRevenueByMethod = $serviceQuery->clone()
             ->select('payment_method', DB::raw('SUM(amount) as total'))
@@ -113,6 +117,7 @@ class FinancialSummaryService
             'total_revenue' => $totalRevenue,
             'total_revenue_usd_cash' => $totalRevenueUsdCash,
             'total_service_revenue' => $totalServiceRevenue,
+            'total_service_revenue_usd' => $totalServiceRevenueUsd,
             'revenue_by_method' => $revenueByMethod,
             'services_by_method' => $serviceRevenueByMethod,
             'total_debits' => $totalDebits,
