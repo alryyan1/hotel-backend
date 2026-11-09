@@ -49,6 +49,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('reservation-services/{reservationService}/pdf', [\App\Http\Controllers\Api\ReservationServiceController::class, 'exportPdf']);
     Route::apiResource('reservation-services', \App\Http\Controllers\Api\ReservationServiceController::class)
         ->middlewareFor(['store', 'update', 'destroy'], 'shift.open');
+    Route::post('reservation-services/{reservationService}/pay', [\App\Http\Controllers\Api\ReservationServiceController::class, 'pay'])
+        ->middleware('shift.open');
 
     // Availability
     Route::get('availability', [\App\Http\Controllers\Api\AvailabilityController::class, 'search']);

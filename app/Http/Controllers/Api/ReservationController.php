@@ -63,7 +63,8 @@ class ReservationController extends Controller
     public function index(Request $request)
     {
         $query = Reservation::with(['customer', 'rooms.type', 'transactions', 'creationLog.user:id,name'])
-            ->withExists(['statusLogs as has_room_transfer' => fn ($q) => $q->whereNotNull('notes')]);
+            ->withExists(['statusLogs as has_room_transfer' => fn ($q) => $q->whereNotNull('notes')])
+            ->withCount('services');
 
         // Search functionality
         if ($request->has('search') && !empty($request->search)) {

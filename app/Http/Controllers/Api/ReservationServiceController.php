@@ -4,7 +4,6 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\ReservationService;
-use App\Models\Transaction;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 use Illuminate\Support\Facades\Log;
@@ -32,7 +31,8 @@ class ReservationServiceController extends Controller
             'reservation_id' => 'required|exists:reservations,id',
             'room_id' => 'required|exists:rooms,id',
             'service_id' => 'required|exists:services,id',
-            'amount' => 'required|numeric|min:0',
+            'quantity' => 'nullable|integer|min:1',
+            'amount' => 'nullable|numeric|min:0',
             'amount_usd' => 'nullable|numeric|min:0',
             'payment_method' => 'nullable|string',
             'notes' => 'nullable|string|max:1000',
@@ -40,25 +40,46 @@ class ReservationServiceController extends Controller
 
         $reservation = \App\Models\Reservation::find($validated['reservation_id']);
         $validated['currency'] = ReservationService::currencyFor($reservation, $validated['amount_usd'] ?? null);
+        $validated['quantity'] ??= 1;
 
+        // Service requests are tracked per reservation only — they no longer post to the customer's ledger.
+        // An unpaid request carries no amount; it is set when the request is settled via pay().
         $reservationService = ReservationService::create($validated);
         $reservationService->load(['reservation.customer', 'room', 'service']);
 
-        // Always create a debit transaction so the service appears in the customer's ledger
-        if ($reservation && $reservation->customer_id) {
-            Transaction::create([
-                'customer_id'            => $reservation->customer_id,
-                'reservation_id'         => $reservation->id,
-                'reservation_service_id' => $reservationService->id,
-                'type'                   => 'debit',
-                'amount'                 => $reservationService->billed_amount,
-                'currency'               => $reservationService->currency,
-                'transaction_date'       => now(),
-                'notes'                  => $reservationService->service->name ?? 'خدمة',
-            ]);
+        return response()->json($reservationService, 201);
+    }
+
+    /**
+     * Settle a service request. The revenue is attributed to the shift/user collecting it,
+     * so it lands in the paying shift's summary rather than the one that took the request.
+     */
+    public function pay(Request $request, ReservationService $reservationService)
+    {
+        if ($reservationService->paid_at) {
+            return response()->json(['message' => 'تم سداد هذه الخدمة مسبقاً'], 422);
         }
 
-        return response()->json($reservationService, 201);
+        $validated = $request->validate([
+            'amount' => 'required|numeric|min:0.01',
+            'currency' => 'required|in:SDG,USD',
+            'payment_method' => 'nullable|in:cash,bankak,Ocash,fawri',
+        ]);
+
+        $isUsd = $validated['currency'] === 'USD';
+
+        $reservationService->forceFill([
+            'amount'         => $isUsd ? null : $validated['amount'],
+            'amount_usd'     => $isUsd ? $validated['amount'] : null,
+            'currency'       => $validated['currency'],
+            // USD only ever settles as physical cash; SDG may use any method.
+            'payment_method' => $isUsd ? 'cash' : ($validated['payment_method'] ?? 'cash'),
+            'paid_at'        => now(),
+            'user_id'        => auth()->id(),
+            'shift_id'       => \App\Models\Shift::current()?->id,
+        ])->save();
+
+        return response()->json($reservationService->load(['room', 'service']));
     }
 
     public function show(ReservationService $reservationService)
@@ -71,6 +92,7 @@ class ReservationServiceController extends Controller
         $validated = $request->validate([
             'room_id' => 'sometimes|exists:rooms,id',
             'service_id' => 'sometimes|exists:services,id',
+            'quantity' => 'sometimes|integer|min:1',
             'amount' => 'sometimes|numeric|min:0',
             'amount_usd' => 'nullable|numeric|min:0',
             'payment_method' => 'nullable|string',
@@ -83,33 +105,12 @@ class ReservationServiceController extends Controller
         $reservationService->update($validated);
         $reservationService->refresh()->load(['reservation.customer', 'room', 'service', 'transaction']);
 
-        $newAmount = $reservationService->billed_amount;
-        $newCurrency = $reservationService->currency;
-        $serviceName = $reservationService->service->name ?? 'خدمة';
-
-        if ($reservationService->transaction) {
-            // Update existing transaction
-            $reservationService->transaction->update([
-                'amount'   => $newAmount,
-                'currency' => $newCurrency,
-                'notes'    => $serviceName,
-            ]);
-        } else {
-            // No transaction yet (old data) — create one now
-            $reservation = $reservationService->reservation;
-            if ($reservation && $reservation->customer_id) {
-                Transaction::create([
-                    'customer_id'            => $reservation->customer_id,
-                    'reservation_id'         => $reservation->id,
-                    'reservation_service_id' => $reservationService->id,
-                    'type'                   => 'debit',
-                    'amount'                 => $newAmount,
-                    'currency'               => $newCurrency,
-                    'transaction_date'       => now(),
-                    'notes'                  => $serviceName,
-                ]);
-            }
-        }
+        // Keep ledger entries from before services stopped posting to the ledger in sync.
+        $reservationService->transaction?->update([
+            'amount'   => $reservationService->billed_amount,
+            'currency' => $reservationService->currency,
+            'notes'    => $reservationService->service->name ?? 'خدمة',
+        ]);
 
         return response()->json($reservationService);
     }

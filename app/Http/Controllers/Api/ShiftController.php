@@ -110,6 +110,7 @@ class ShiftController extends Controller
                 ->orderByDesc('id')
                 ->get(),
             'services' => $scoped(ReservationService::query())
+                ->whereNotNull('paid_at')
                 ->with(['service', 'room', 'reservation.customer:id,name', 'user:id,name'])
                 ->orderByDesc('id')
                 ->get(),

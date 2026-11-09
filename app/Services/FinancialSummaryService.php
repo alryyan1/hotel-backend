@@ -84,12 +84,13 @@ class FinancialSummaryService
             ->where('type', 'credit')
             ->sum('amount');
 
-        // Total service revenue
+        // Service revenue counts when a request is settled, not when it is taken.
+        $serviceQuery->whereNotNull('paid_at');
         if ($dateFrom) {
-            $serviceQuery->where('created_at', '>=', $dateFrom);
+            $serviceQuery->where('paid_at', '>=', $dateFrom);
         }
         if ($dateTo) {
-            $serviceQuery->where('created_at', '<=', $dateTo);
+            $serviceQuery->where('paid_at', '<=', $dateTo);
         }
 
         // Services billed in USD are reported apart, never summed with SDG.

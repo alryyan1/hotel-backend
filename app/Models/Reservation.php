@@ -125,4 +125,9 @@ class Reservation extends Model
     {
         return $this->hasMany(Transaction::class);
     }
+
+    public function services(): HasMany
+    {
+        return $this->hasMany(ReservationService::class);
+    }
 }

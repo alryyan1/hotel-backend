@@ -10,7 +10,11 @@ class ReservationService extends Model
 {
     use BelongsToShift;
 
-    protected $fillable = ['reservation_id', 'room_id', 'service_id', 'amount', 'amount_usd', 'currency', 'payment_method', 'notes'];
+    protected $fillable = ['reservation_id', 'room_id', 'service_id', 'quantity', 'amount', 'amount_usd', 'currency', 'payment_method', 'paid_at', 'notes'];
+
+    protected $casts = [
+        'paid_at' => 'datetime',
+    ];
 
     protected $appends = ['billed_amount'];
 
