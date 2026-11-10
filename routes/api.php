@@ -63,6 +63,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('reservations/{reservation}/extend', [\App\Http\Controllers\Api\ReservationController::class, 'extend'])->middleware('shift.open');
     Route::post('reservations/{reservation}/transfer-room', [\App\Http\Controllers\Api\ReservationController::class, 'transferRoom'])->middleware('shift.open');
     Route::get('reservations/export/excel', [\App\Http\Controllers\Api\ReservationController::class, 'exportExcel']);
+    Route::get('reports/daily/excel', [AppHttpControllersApiDailyReportController::class, 'export']);
     Route::post('reservations/send-checkout-reminders', [\App\Http\Controllers\Api\ReservationController::class, 'sendCheckoutReminders']);
     Route::get('reservations/today/{type}/pdf', [\App\Http\Controllers\Api\ReservationController::class, 'exportTodayPdf'])
         ->whereIn('type', ['arrivals', 'departures']);

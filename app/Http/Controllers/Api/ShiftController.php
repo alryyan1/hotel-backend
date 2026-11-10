@@ -105,7 +105,7 @@ class ShiftController extends Controller
             'summary' => $this->figuresFor($shift, $user),
             'users' => $user->is_admin ? $this->usersFor($shift) : null,
             'transactions' => $scoped(Transaction::query())
-                ->whereIn('type', ['credit', 'refund'])
+                ->where('type', 'credit')
                 ->with(['customer:id,name', 'user:id,name'])
                 ->orderByDesc('id')
                 ->get(),
@@ -161,7 +161,7 @@ class ShiftController extends Controller
             $pdf->Cell(0, 9, 'إيرادات المستخدمين', 0, 1, 'R');
             $pdf->SetFont('arial', 'B', 10);
             $pdf->SetFillColor(230, 230, 230);
-            $headers = ['المستخدم' => 32, 'مدفوعات الحجوزات (SDG)' => 33, 'الخدمات' => 27, 'مسترجع' => 27, 'الصافي (SDG)' => 27, 'كاش $ مستلم' => 29];
+            $headers = ['المستخدم' => 38, 'مدفوعات الحجوزات (SDG)' => 40, 'الخدمات' => 32, 'الصافي (SDG)' => 32, 'كاش $ مستلم' => 33];
             foreach ($headers as $label => $width) {
                 $pdf->Cell($width, 9, $label, 1, 0, 'C', true);
             }
@@ -169,12 +169,11 @@ class ShiftController extends Controller
             $pdf->SetFont('arial', '', 10);
             foreach ($users as $row) {
                 $s = $row['summary'];
-                $pdf->Cell(32, 8, $row['name'], 1, 0, 'C');
-                $pdf->Cell(33, 8, $this->money($s['total_revenue']), 1, 0, 'C');
-                $pdf->Cell(27, 8, $this->money($s['total_service_revenue']), 1, 0, 'C');
-                $pdf->Cell(27, 8, $this->money($s['total_refunds']), 1, 0, 'C');
-                $pdf->Cell(27, 8, $this->money($s['net_profit']), 1, 0, 'C');
-                $pdf->Cell(29, 8, $this->money($s['total_revenue_usd_cash'] ?? 0), 1, 1, 'C');
+                $pdf->Cell(38, 8, $row['name'], 1, 0, 'C');
+                $pdf->Cell(40, 8, $this->money($s['total_revenue']), 1, 0, 'C');
+                $pdf->Cell(32, 8, $this->money($s['total_service_revenue']), 1, 0, 'C');
+                $pdf->Cell(32, 8, $this->money($s['total_revenue'] + $s['total_service_revenue']), 1, 0, 'C');
+                $pdf->Cell(33, 8, $this->money($s['total_revenue_usd_cash'] ?? 0), 1, 1, 'C');
             }
         }
 
@@ -222,27 +221,25 @@ class ShiftController extends Controller
     private function pdfMethodTable(\TCPDF $pdf, array $summary): void
     {
         $methodLabels = ['cash' => 'نقدي', 'bankak' => 'بنكك', 'Ocash' => 'أوكاش', 'fawri' => 'فوري', 'unknown' => 'غير معروف'];
-        $widths = [40, 35, 35, 30, 35];
+        $widths = [45, 45, 45, 40];
         $lastCol = count($widths) - 1;
 
         $pdf->SetFont('arial', 'B', 10);
         $pdf->SetFillColor(230, 230, 230);
-        foreach (['طريقة الدفع', 'مدفوعات الحجوزات', 'الخدمات', 'مسترجع', 'الصافي'] as $i => $label) {
+        foreach (['طريقة الدفع', 'مدفوعات الحجوزات', 'الخدمات', 'الصافي'] as $i => $label) {
             $pdf->Cell($widths[$i], 10, $label, 1, $i === $lastCol ? 1 : 0, 'C', true);
         }
 
         $methods = array_unique(array_merge(
             array_keys($summary['revenue_by_method'] ?? []),
-            array_keys($summary['services_by_method'] ?? []),
-            array_keys($summary['refunds_by_method'] ?? [])
+            array_keys($summary['services_by_method'] ?? [])
         ));
 
         $pdf->SetFont('arial', '', 10);
         foreach ($methods as $method) {
             $rev = $summary['revenue_by_method'][$method] ?? 0;
             $srv = $summary['services_by_method'][$method] ?? 0;
-            $ref = $summary['refunds_by_method'][$method] ?? 0;
-            $row = [$methodLabels[$method] ?? $method, $rev, $srv, $ref, $rev + $srv - $ref];
+            $row = [$methodLabels[$method] ?? $method, $rev, $srv, $rev + $srv];
             foreach ($row as $i => $value) {
                 $pdf->Cell($widths[$i], 8, $i === 0 ? $value : $this->money($value), 1, $i === $lastCol ? 1 : 0, 'C');
             }
@@ -250,7 +247,7 @@ class ShiftController extends Controller
 
         $pdf->SetFont('arial', 'B', 10);
         $pdf->SetFillColor(245, 245, 245);
-        $totals = ['الإجمالي', $summary['total_revenue'], $summary['total_service_revenue'], $summary['total_refunds'], $summary['net_profit']];
+        $totals = ['الإجمالي', $summary['total_revenue'], $summary['total_service_revenue'], $summary['total_revenue'] + $summary['total_service_revenue']];
         foreach ($totals as $i => $value) {
             $pdf->Cell($widths[$i], 8, $i === 0 ? $value : $this->money($value), 1, $i === $lastCol ? 1 : 0, 'C', true);
         }

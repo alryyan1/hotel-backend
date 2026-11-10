@@ -579,7 +579,7 @@ class ReservationController extends Controller
             }
         }
 
-        DB::transaction(function () use ($reservation, $today, $newCheckOutDate, $isEarlyCheckout, $refundAmount, $remainingDays, $scheduledCheckOut) {
+        DB::transaction(function () use ($reservation, $newCheckOutDate, $isEarlyCheckout, $refundAmount, $remainingDays) {
             foreach ($reservation->rooms as $room) {
                 \App\Models\CleaningNotification::create([
                     'room_id' => $room->id,
@@ -602,18 +602,11 @@ class ReservationController extends Controller
                     }
                 }
 
+                // No refund is recorded — the unused nights' value is only kept so the
+                // customer ledger can show a hint to refund it.
                 if ($refundAmount > 0) {
-                    Transaction::create([
-                        'customer_id' => $reservation->customer_id,
-                        'reservation_id' => $reservation->id,
-                        'type' => 'refund',
-                        'amount' => $refundAmount,
-                        'currency' => $reservation->currency,
-                        'method' => request('refund_method', 'cash'),
-                        'transaction_date' => $today,
-                        'notes' => 'مغادرة مبكرة - استرجاع ' . $remainingDays . ' يوم (الموعد الأصلي: ' . $scheduledCheckOut . ')',
-                        'reference' => 'REFUND-RES-' . $reservation->id,
-                    ]);
+                    $updateData['early_checkout_nights'] = $remainingDays;
+                    $updateData['early_checkout_refund'] = $refundAmount;
                 }
             }
 

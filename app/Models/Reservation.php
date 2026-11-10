@@ -50,10 +50,13 @@ class Reservation extends Model
         'total_amount',
         'paid_amount',
         'checkout_reminder_sent_at',
+        'early_checkout_nights',
+        'early_checkout_refund',
     ];
 
     protected $casts = [
         'checkout_reminder_sent_at' => 'datetime',
+        'early_checkout_refund' => 'float',
     ];
 
     // Old rooms stay visible after a transfer, whichever endpoint returns the reservation

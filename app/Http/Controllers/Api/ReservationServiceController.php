@@ -15,11 +15,16 @@ class ReservationServiceController extends Controller
      */
     public function index(Request $request)
     {
-        $query = ReservationService::with(['reservation.customer', 'room', 'service']);
+        $query = ReservationService::with(['reservation.customer', 'room', 'service', 'user:id,name', 'creator:id,name']);
         
         // Optionally filter by reservation
         if ($request->has('reservation_id')) {
             $query->where('reservation_id', $request->get('reservation_id'));
+        }
+
+        // Or by customer, across all of their reservations (customer ledger)
+        if ($request->has('customer_id')) {
+            $query->whereHas('reservation', fn ($q) => $q->where('customer_id', $request->get('customer_id')));
         }
 
         return response()->json($query->orderByDesc('id')->get());
@@ -32,6 +37,8 @@ class ReservationServiceController extends Controller
             'room_id' => 'required|exists:rooms,id',
             'service_id' => 'required|exists:services,id',
             'quantity' => 'nullable|integer|min:1',
+            'price' => 'nullable|numeric|min:0',
+            'price_currency' => 'nullable|required_with:price|in:SDG,USD',
             'amount' => 'nullable|numeric|min:0',
             'amount_usd' => 'nullable|numeric|min:0',
             'payment_method' => 'nullable|string',
@@ -45,7 +52,7 @@ class ReservationServiceController extends Controller
         // Service requests are tracked per reservation only — they no longer post to the customer's ledger.
         // An unpaid request carries no amount; it is set when the request is settled via pay().
         $reservationService = ReservationService::create($validated);
-        $reservationService->load(['reservation.customer', 'room', 'service']);
+        $reservationService->load(['reservation.customer', 'room', 'service', 'user:id,name', 'creator:id,name']);
 
         return response()->json($reservationService, 201);
     }
@@ -79,7 +86,7 @@ class ReservationServiceController extends Controller
             'shift_id'       => \App\Models\Shift::current()?->id,
         ])->save();
 
-        return response()->json($reservationService->load(['room', 'service']));
+        return response()->json($reservationService->load(['room', 'service', 'user:id,name', 'creator:id,name']));
     }
 
     public function show(ReservationService $reservationService)
@@ -93,6 +100,8 @@ class ReservationServiceController extends Controller
             'room_id' => 'sometimes|exists:rooms,id',
             'service_id' => 'sometimes|exists:services,id',
             'quantity' => 'sometimes|integer|min:1',
+            'price' => 'nullable|numeric|min:0',
+            'price_currency' => 'nullable|in:SDG,USD',
             'amount' => 'sometimes|numeric|min:0',
             'amount_usd' => 'nullable|numeric|min:0',
             'payment_method' => 'nullable|string',

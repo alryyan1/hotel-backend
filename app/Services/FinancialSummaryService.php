@@ -9,7 +9,7 @@ use Illuminate\Support\Facades\DB;
 class FinancialSummaryService
 {
     /**
-     * Revenue / services / refunds totals with per-method breakdowns.
+     * Revenue / services totals with per-method breakdowns.
      *
      * SDG is the only currency with more than one payment method (cash, bankak,
      * Ocash, fawri) — USD reservations can only ever be paid in physical cash
@@ -62,22 +62,6 @@ class FinancialSummaryService
             ->where('type', 'debit')
             ->sum('amount');
 
-        // Total refunds (SDG early checkout refunds)
-        $totalRefunds = (float) $sdgTransactions->clone()
-            ->where('type', 'refund')
-            ->sum('amount');
-
-        // Payment method breakdown for refunds
-        $refundsByMethod = $sdgTransactions->clone()
-            ->where('type', 'refund')
-            ->select('method', DB::raw('SUM(amount) as total'))
-            ->groupBy('method')
-            ->get()
-            ->mapWithKeys(function ($item) {
-                return [$item->method ?: 'cash' => (float) $item->total];
-            })
-            ->toArray();
-
         // USD only ever settles as cash, so a single received total is all that's meaningful.
         $totalRevenueUsdCash = (float) $transactionQuery->clone()
             ->where('currency', 'USD')
@@ -110,9 +94,9 @@ class FinancialSummaryService
         // Total service revenue
         $totalServiceRevenue = (float) $serviceQuery->sum('amount');
 
-        // Net profit (SDG revenue + service revenue - SDG refunds) — USD cash
+        // Net profit (SDG revenue + service revenue) — USD cash
         // received is reported separately since it can't be summed with SDG.
-        $netProfit = $totalRevenue + $totalServiceRevenue - $totalRefunds;
+        $netProfit = $totalRevenue + $totalServiceRevenue;
 
         return [
             'total_revenue' => $totalRevenue,
@@ -122,8 +106,6 @@ class FinancialSummaryService
             'revenue_by_method' => $revenueByMethod,
             'services_by_method' => $serviceRevenueByMethod,
             'total_debits' => $totalDebits,
-            'total_refunds' => $totalRefunds,
-            'refunds_by_method' => $refundsByMethod,
             'net_profit' => $netProfit,
         ];
     }

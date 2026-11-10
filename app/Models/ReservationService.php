@@ -10,11 +10,19 @@ class ReservationService extends Model
 {
     use BelongsToShift;
 
-    protected $fillable = ['reservation_id', 'room_id', 'service_id', 'quantity', 'amount', 'amount_usd', 'currency', 'payment_method', 'paid_at', 'notes'];
+    protected $fillable = ['reservation_id', 'room_id', 'service_id', 'quantity', 'price', 'price_currency', 'amount', 'amount_usd', 'currency', 'payment_method', 'paid_at', 'notes'];
 
     protected $casts = [
         'paid_at' => 'datetime',
+        'price' => 'float',
     ];
+
+    protected static function booted(): void
+    {
+        static::creating(function ($model) {
+            $model->created_by ??= auth()->id();
+        });
+    }
 
     protected $appends = ['billed_amount'];
 
@@ -52,5 +60,11 @@ class ReservationService extends Model
     public function service()
     {
         return $this->belongsTo(Service::class);
+    }
+
+    /** The user who entered the request (user() is the one who settled it). */
+    public function creator()
+    {
+        return $this->belongsTo(User::class, 'created_by');
     }
 }

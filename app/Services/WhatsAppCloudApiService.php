@@ -153,11 +153,10 @@ class WhatsAppCloudApiService
 
     /**
      * Notify a room's cleaning staff (numbers configured in settings for the
-     * "cleaning" event) that it needs cleaning after a checkout. Sent as a plain
-     * text message, not a template — note this only delivers if the staff number
-     * has messaged the business WhatsApp number within the last 24 hours (Meta's
-     * customer-service session window); outside that window Meta rejects
-     * business-initiated free text and a template would be required instead.
+     * "cleaning" event) that it needs cleaning after a checkout. Sent as the
+     * approved "room_cleaning_staff" template ({{1}} = room number) so it is
+     * delivered outside Meta's 24-hour customer-service window. Falls back to
+     * free text (which only delivers inside that window) if the template fails.
      */
     public function notifyCleaningCheckout(Room $room): array
     {
@@ -173,7 +172,16 @@ class WhatsAppCloudApiService
 
         $results = [];
         foreach ($numbers as $phone) {
-            $results[] = $this->sendTextMessage($phone, $message);
+            $result = $this->sendTemplateMessage($phone, 'room_cleaning_staff', 'ar', [(string) $room->number]);
+
+            if (!$result['success']) {
+                Log::warning("WhatsAppCloudApiService: cleaning template failed for {$phone}, falling back to free text.", [
+                    'error' => $result['error'] ?? null,
+                ]);
+                $result = $this->sendTextMessage($phone, $message);
+            }
+
+            $results[] = $result;
         }
 
         return [
