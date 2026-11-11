@@ -472,6 +472,32 @@ class ReservationController extends Controller
         ]);
     }
 
+    /**
+     * Manually (re)send the WhatsApp checkout reminder for a single reservation,
+     * triggered from a per-row button rather than the bulk "remind everyone" action.
+     */
+    public function sendCheckoutReminder(Reservation $reservation)
+    {
+        $settings = HotelSetting::first();
+        if (!($settings->whatsapp_notifications_enabled ?? true)) {
+            return response()->json(['message' => 'إشعارات واتساب معطّلة من الإعدادات'], 422);
+        }
+
+        $reservation->load('customer');
+        $result = $this->whatsappService->sendCheckoutReminderTemplate($reservation);
+
+        if (!$result['success']) {
+            return response()->json(['message' => $result['error'] ?? 'فشل إرسال التذكير'], 422);
+        }
+
+        $reservation->update(['checkout_reminder_sent_at' => now()]);
+
+        return response()->json([
+            'message' => 'تم إرسال تذكير المغادرة بنجاح',
+            'checkout_reminder_sent_at' => $reservation->checkout_reminder_sent_at,
+        ]);
+    }
+
     public function checkIn(Request $request, Reservation $reservation)
     {
         if (! in_array($reservation->status, ['confirmed'])) {
