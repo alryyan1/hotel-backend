@@ -34,11 +34,16 @@ class AvailabilityController extends Controller
         $rooms = $query->get();
 
         // Transform rooms to include occupancy info and pricing
-        $transformedRooms = $rooms->map(function ($room) use ($checkIn, $checkOut, $days) {
-            // Find current active reservation
+        $today = Carbon::today();
+        $transformedRooms = $rooms->map(function ($room) use ($checkIn, $checkOut, $days, $today) {
+            // "Occupied" means a reservation covers today, not just that one exists somewhere
+            // in the future (e.g. a booking starting in 7 days must not block the room today).
             $currentReservation = $room->reservations
                 ->whereNotIn('status', ['checked_out', 'cancelled'])
-                ->first();
+                ->first(function ($reservation) use ($today) {
+                    return $today->gte(Carbon::parse($reservation->check_in_date)->startOfDay())
+                        && $today->lt(Carbon::parse($reservation->check_out_date)->startOfDay());
+                });
 
             $isOccupied = $currentReservation !== null;
 
