@@ -504,6 +504,17 @@ class ReservationController extends Controller
             return response()->json(['message' => 'Reservation must be confirmed to check in'], 422);
         }
 
+        // Unless enabled in hotel settings, check-in is only allowed on the arrival date
+        $allowOtherDay = HotelSetting::first()->allow_checkin_outside_arrival_date ?? false;
+        $checkInDateStr = $reservation->check_in_date instanceof \Carbon\Carbon
+            ? $reservation->check_in_date->toDateString()
+            : substr($reservation->check_in_date, 0, 10);
+        if (! $allowOtherDay && $checkInDateStr !== now()->toDateString()) {
+            return response()->json([
+                'message' => "لا يمكن تسجيل الوصول إلا في يوم الوصول ({$checkInDateStr})",
+            ], 422);
+        }
+
         // Check if any rooms are already occupied by reservations with status 'checked_in'
         // Only prevent check-in if there's a conflicting reservation with status 'checked_in'
         // Allow check-in even if there are pending/confirmed reservations for the same room

@@ -69,10 +69,12 @@ class HotelSetting extends Model
         'bank_account_name_2',
         'sms_notifications_enabled',
         'whatsapp_notifications_enabled',
+        'allow_checkin_outside_arrival_date',
     ];
 
     protected $casts = [
         'sms_notifications_enabled' => 'boolean',
         'whatsapp_notifications_enabled' => 'boolean',
+        'allow_checkin_outside_arrival_date' => 'boolean',
     ];
 }

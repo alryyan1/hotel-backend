@@ -57,6 +57,7 @@ class HotelSettingController extends Controller
             'bank_account_name_2' => ['nullable','string','max:255'],
             'sms_notifications_enabled' => ['nullable','boolean'],
             'whatsapp_notifications_enabled' => ['nullable','boolean'],
+            'allow_checkin_outside_arrival_date' => ['nullable','boolean'],
             'logo' => ['nullable','image','max:2048'],
             'stamp' => ['nullable','image','max:2048'],
             'header' => ['nullable','image','max:2048'],
