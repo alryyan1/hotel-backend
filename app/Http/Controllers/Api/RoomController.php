@@ -145,6 +145,29 @@ class RoomController extends Controller
     }
 
     /**
+     * Quickly change just the room's status (e.g. clearing maintenance/cleaning
+     * back to available) without resubmitting the full room form.
+     */
+    public function updateStatus(Request $request, Room $room): JsonResponse
+    {
+        try {
+            $validated = $request->validate([
+                'room_status_id' => 'required|exists:room_statuses,id',
+            ]);
+
+            $room->update($validated);
+            $room->load(['floor', 'type', 'status']);
+
+            return response()->json($room);
+        } catch (ValidationException $e) {
+            return response()->json([
+                'message' => 'Validation failed',
+                'errors' => $e->errors()
+            ], 422);
+        }
+    }
+
+    /**
      * Remove the specified resource from storage.
      */
     public function destroy(Room $room): JsonResponse

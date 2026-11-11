@@ -36,6 +36,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::apiResource('room-types', \App\Http\Controllers\Api\RoomTypeController::class);
     Route::apiResource('room-statuses', \App\Http\Controllers\Api\RoomStatusController::class);
     Route::get('rooms/all', [\App\Http\Controllers\Api\RoomController::class, 'all']);
+    Route::patch('rooms/{room}/status', [\App\Http\Controllers\Api\RoomController::class, 'updateStatus']);
     Route::apiResource('rooms', \App\Http\Controllers\Api\RoomController::class);
     Route::apiResource('reservations', \App\Http\Controllers\Api\ReservationController::class)
         ->middlewareFor(['store', 'update', 'destroy'], 'shift.open');
@@ -65,6 +66,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('reservations/export/excel', [\App\Http\Controllers\Api\ReservationController::class, 'exportExcel']);
     Route::get('reports/daily/excel', [AppHttpControllersApiDailyReportController::class, 'export']);
     Route::post('reservations/send-checkout-reminders', [\App\Http\Controllers\Api\ReservationController::class, 'sendCheckoutReminders']);
+    Route::post('reservations/{reservation}/send-checkout-reminder', [\App\Http\Controllers\Api\ReservationController::class, 'sendCheckoutReminder']);
     Route::get('reservations/today/{type}/pdf', [\App\Http\Controllers\Api\ReservationController::class, 'exportTodayPdf'])
         ->whereIn('type', ['arrivals', 'departures']);
     Route::get('reservations/{reservation}/invoice/pdf', [\App\Http\Controllers\Api\ReservationController::class, 'exportInvoicePdf']);
