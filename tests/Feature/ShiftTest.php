@@ -3,6 +3,9 @@
 namespace Tests\Feature;
 
 use App\Models\Customer;
+use App\Models\Reservation;
+use App\Models\ReservationService;
+use App\Models\Service;
 use App\Models\Shift;
 use App\Models\Transaction;
 use App\Models\User;
@@ -47,6 +50,7 @@ class ShiftTest extends TestCase
         $shiftId = $this->actingAs($user)->postJson('/api/shifts/open')->json('id');
 
         $this->actingAs($user)->postJson("/api/shifts/{$shiftId}/close")->assertOk();
+        $this->travel(5)->hours();
         $this->actingAs($user)->postJson('/api/shifts/open')->assertCreated();
     }
 
@@ -91,6 +95,7 @@ class ShiftTest extends TestCase
         $this->credit($user, 1000);
         $this->actingAs($user)->postJson("/api/shifts/{$first}/close")->assertOk();
 
+        $this->travel(5)->hours();
         $this->actingAs($user)->postJson('/api/shifts/open');
         $this->credit($user, 50);
 
@@ -185,6 +190,7 @@ class ShiftTest extends TestCase
         $shiftId = $this->actingAs($alice)->postJson('/api/shifts/open')->json('id');
         $this->credit($alice, 300);
         $this->credit($bob, 500);
+        $this->paidService($bob, 'غسيل', 4, 'USD');
         $this->actingAs($alice)->postJson("/api/shifts/{$shiftId}/close");
 
         $this->actingAs($bob)->getJson('/api/shifts')
@@ -199,5 +205,72 @@ class ShiftTest extends TestCase
         $this->actingAs($this->makeUser(admin: true))->get("/api/shifts/{$shiftId}/pdf")
             ->assertOk()
             ->assertHeader('Content-Type', 'application/pdf');
+    }
+
+    private function paidService(User $payer, string $serviceName, float $amount, string $currency = 'SDG', int $quantity = 1): ReservationService
+    {
+        $this->actingAs($payer);
+        $customer = Customer::create(['name' => 'عميل ' . uniqid()]);
+        $reservation = Reservation::create([
+            'customer_id' => $customer->id,
+            'check_in_date' => now()->toDateString(),
+            'check_out_date' => now()->addDay()->toDateString(),
+            'currency' => $currency,
+        ]);
+
+        return ReservationService::create([
+            'reservation_id' => $reservation->id,
+            'room_id' => $this->makeRoom()->id,
+            'service_id' => Service::firstOrCreate(['name' => $serviceName])->id,
+            'quantity' => $quantity,
+            'amount' => $currency === 'SDG' ? $amount : null,
+            'amount_usd' => $currency === 'USD' ? $amount : null,
+            'currency' => $currency,
+            'payment_method' => 'cash',
+            'paid_at' => now(),
+        ]);
+    }
+
+    public function test_summary_breaks_services_down_by_service_and_currency(): void
+    {
+        $user = $this->makeUser();
+        Shift::create(['opened_by' => $user->id, 'opened_at' => now(), 'status' => 'open', 'open_flag' => true]);
+
+        $this->paidService($user, 'غسيل', 200, quantity: 2);
+        $this->paidService($user, 'غسيل', 300);
+        $this->paidService($user, 'غسيل', 5, 'USD');
+        $this->paidService($user, 'مطعم', 1000);
+
+        $services = collect($this->actingAs($user)->getJson('/api/shifts/current')->json('summary.services_breakdown'))
+            ->keyBy('name');
+
+        $this->assertEquals(['count' => 3, 'quantity' => 4, 'total_sdg' => 500, 'total_usd' => 5],
+            collect($services['غسيل'])->only('count', 'quantity', 'total_sdg', 'total_usd')->all());
+        $this->assertEquals(1000, $services['مطعم']['total_sdg']);
+    }
+
+    public function test_user_breakdown_attributes_revenue_to_the_collecting_user(): void
+    {
+        $alice = $this->makeUser();
+        $bob = $this->makeUser();
+        $carol = $this->makeUser();
+        $shift = Shift::create(['opened_by' => $alice->id, 'opened_at' => now(), 'status' => 'open', 'open_flag' => true]);
+
+        $this->credit($alice, 300);
+        $this->paidService($bob, 'غسيل', 7, 'USD');
+
+        // Carol only takes an unpaid request; Alice settles it, so the revenue is Alice's
+        $this->actingAs($carol);
+        $request = $this->paidService($carol, 'مطعم', 0);
+        $request->forceFill(['paid_at' => null, 'amount' => null])->save();
+        $this->actingAs($alice)->postJson("/api/reservation-services/{$request->id}/pay", ['amount' => 150, 'currency' => 'SDG'])->assertOk();
+
+        $users = collect(app(\App\Services\ShiftService::class)->userBreakdown($shift))->keyBy('user_id');
+
+        $this->assertEqualsCanonicalizing([$alice->id, $bob->id], $users->keys()->all());
+        $this->assertEquals(300, $users[$alice->id]['summary']['total_revenue']);
+        $this->assertEquals(150, $users[$alice->id]['summary']['total_service_revenue']);
+        $this->assertEquals(7, $users[$bob->id]['summary']['total_service_revenue_usd']);
+        $this->assertEquals(0, $users[$bob->id]['summary']['total_revenue']);
     }
 }

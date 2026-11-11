@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Transaction;
 use App\Models\Customer;
 use App\Models\Reservation;
+use App\Models\Shift;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Response;
@@ -173,13 +174,30 @@ class TransactionController extends Controller
     }
 
     /**
-     * Remove the specified transaction.
+     * Cancel a payment. Only credit transactions can be cancelled — reservation charges
+     * are managed through the reservation itself. A regular user may only cancel a
+     * payment they recorded in the currently open shift, so a closed shift's handed-over
+     * revenue can't change behind its back; admins may cancel any payment.
      */
-    public function destroy(Transaction $transaction): JsonResponse
+    public function destroy(Request $request, Transaction $transaction): JsonResponse
     {
+        if ($transaction->type !== 'credit') {
+            return response()->json(['message' => 'يمكن إلغاء الدفعات فقط'], 422);
+        }
+
+        $user = $request->user();
+        if (!$user->is_admin) {
+            $isOwn = (int) $transaction->user_id === (int) $user->id;
+            $inOpenShift = $transaction->shift_id && (int) $transaction->shift_id === (int) Shift::current()?->id;
+
+            if (!$isOwn || !$inOpenShift) {
+                return response()->json(['message' => 'يمكنك إلغاء الدفعات التي سجلتها في الوردية الحالية فقط'], 403);
+            }
+        }
+
         $transaction->delete();
 
-        return response()->json(['message' => 'Transaction deleted successfully']);
+        return response()->json(['message' => 'تم إلغاء السداد']);
     }
 
     /**

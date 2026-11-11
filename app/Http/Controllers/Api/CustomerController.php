@@ -224,7 +224,7 @@ class CustomerController extends Controller
     public function getLedger(Customer $customer): JsonResponse
     {
         // Load customer with transactions and related reservations/rooms/services
-        $customer->load(['transactions.reservation.rooms.type', 'transactions.reservationService.service']);
+        $customer->load(['transactions.reservation.rooms.type', 'transactions.reservationService.service', 'transactions.user:id,name']);
 
         // Get room types for pricing (for backward compatibility if needed)
         $roomTypes = RoomType::all()->keyBy('id');
@@ -283,7 +283,7 @@ class CustomerController extends Controller
     public function exportLedgerPdf(Customer $customer): Response
     {
         // Load customer with transactions and related reservations/rooms/services
-        $customer->load(['transactions.reservation.rooms.type', 'transactions.reservationService.service']);
+        $customer->load(['transactions.reservation.rooms.type', 'transactions.reservationService.service', 'transactions.user:id,name']);
 
         // Get room types for pricing (for backward compatibility if needed)
         $roomTypes = RoomType::all()->keyBy('id');
@@ -981,6 +981,10 @@ class CustomerController extends Controller
                     'date' => date('d/m/Y', strtotime($transaction->transaction_date)),
                     'description' => 'دفعة - ' . ($transaction->reference ?? ''),
                     'paymentMethod' => $methodLabels[$transaction->method] ?? $transaction->method ?? '',
+                    // Who recorded the payment, and its shift — the UI uses both to offer cancelling it
+                    'paid_by' => $transaction->user?->name,
+                    'user_id' => $transaction->user_id,
+                    'shift_id' => $transaction->shift_id,
                     'currency' => $currency,
                     'days' => null,
                     'debit' => 0,

@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\ReservationService;
+use App\Models\Service;
 use App\Models\Shift;
 use App\Models\Transaction;
 use App\Models\User;
@@ -97,16 +98,54 @@ class ShiftService
             $scope['user_id'] = $userId;
         }
 
-        return $this->summaries->summarize(null, null, $scope);
+        return $this->summaries->summarize(null, null, $scope) + [
+            'services_breakdown' => $this->servicesBreakdown($scope),
+        ];
     }
 
     /**
-     * Per-user summaries for everyone who recorded a financial operation in the shift.
+     * Settled services grouped by service, with SDG and USD totals kept apart.
+     */
+    private function servicesBreakdown(array $scope): array
+    {
+        $rows = ReservationService::query()
+            ->where($scope)
+            ->whereNotNull('paid_at')
+            ->select(
+                'service_id',
+                DB::raw('COUNT(*) as count'),
+                DB::raw('SUM(quantity) as quantity'),
+                DB::raw("SUM(CASE WHEN currency = 'USD' THEN 0 ELSE amount END) as total_sdg"),
+                DB::raw("SUM(CASE WHEN currency = 'USD' THEN amount_usd ELSE 0 END) as total_usd")
+            )
+            ->groupBy('service_id')
+            ->get();
+
+        $names = Service::whereIn('id', $rows->pluck('service_id'))->pluck('name', 'id');
+
+        return $rows
+            ->map(fn ($row) => [
+                'service_id' => $row->service_id,
+                'name' => $names[$row->service_id] ?? '-',
+                'count' => (int) $row->count,
+                'quantity' => (int) $row->quantity,
+                'total_sdg' => (float) $row->total_sdg,
+                'total_usd' => (float) $row->total_usd,
+            ])
+            ->sortBy('name')
+            ->values()
+            ->all();
+    }
+
+    /**
+     * Per-user summaries for everyone who collected money in the shift. Only payments and
+     * settled services count — reservation debits and unpaid service requests are also
+     * stamped with the shift but are not revenue, so they must not add (empty) rows.
      */
     public function userBreakdown(Shift $shift): array
     {
-        $userIds = collect([Transaction::class, ReservationService::class])
-            ->flatMap(fn ($model) => $model::where('shift_id', $shift->id)->whereNotNull('user_id')->distinct()->pluck('user_id'))
+        $userIds = Transaction::where('shift_id', $shift->id)->where('type', 'credit')->whereNotNull('user_id')->distinct()->pluck('user_id')
+            ->merge(ReservationService::where('shift_id', $shift->id)->whereNotNull('paid_at')->whereNotNull('user_id')->distinct()->pluck('user_id'))
             ->unique()
             ->values();
 
