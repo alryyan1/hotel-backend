@@ -66,6 +66,21 @@ class AvailabilityController extends Controller
                 'total_price_usd' => $priceUsd === null ? null : $priceUsd * $days,
                 'total_price_sdg' => $priceSdg * $days,
                 'current_reservation' => null,
+                // Future bookings (starting after today) so staff can see the room
+                // is taken later even though it is free right now. `overlaps` flags
+                // the ones that clash with the searched date range.
+                'upcoming_reservations' => $room->reservations
+                    ->filter(fn($reservation) => Carbon::parse($reservation->check_in_date)->startOfDay()->gt($today))
+                    ->sortBy('check_in_date')
+                    ->values()
+                    ->map(fn($reservation) => [
+                        'id' => $reservation->id,
+                        'customer_name' => $reservation->customer->name ?? 'غير معروف',
+                        'check_in_date' => $reservation->check_in_date,
+                        'check_out_date' => $reservation->check_out_date,
+                        'overlaps' => $checkIn->lt(Carbon::parse($reservation->check_out_date)->startOfDay())
+                            && $checkOut->gt(Carbon::parse($reservation->check_in_date)->startOfDay()),
+                    ]),
             ];
 
             if ($isOccupied && $currentReservation) {

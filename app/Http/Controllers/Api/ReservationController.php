@@ -179,6 +179,19 @@ class ReservationController extends Controller
             $currency = 'SDG';
         }
 
+        // Rooms under maintenance/cleaning can't be booked until staff clear the status.
+        $outOfServiceRoom = \App\Models\Room::whereIn('id', collect($data['rooms'])->pluck('id'))
+            ->whereHas('status', fn($q) => $q->whereIn('code', ['maintenance', 'cleaning']))
+            ->with('status')
+            ->first();
+        if ($outOfServiceRoom) {
+            $statusLabel = $outOfServiceRoom->status->code === 'maintenance' ? 'الصيانة' : 'النظافة';
+            return response()->json([
+                'message' => "لا يمكن حجز الغرفة {$outOfServiceRoom->number} لأنها تحت {$statusLabel}",
+                'room_id' => $outOfServiceRoom->id,
+            ], 422);
+        }
+
         // Check overlap for each requested room
         foreach ($data['rooms'] as $roomReq) {
             $overlap = Reservation::query()

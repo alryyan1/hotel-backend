@@ -70,6 +70,7 @@ class HotelSetting extends Model
         'sms_notifications_enabled',
         'whatsapp_notifications_enabled',
         'allow_checkin_outside_arrival_date',
+        'whatsapp_confirmation_template',
     ];
 
     protected $casts = [

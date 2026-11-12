@@ -30,11 +30,13 @@ class HotelSettingController extends Controller
         if ($settings) {
             return response()->json([
                 'official_name' => $settings->official_name,
+                'branch_name' => $settings->branch_name,
                 'logo_url' => $settings->logo_path ? asset('storage/' . $settings->logo_path) : null,
             ]);
         }
         return response()->json([
             'official_name' => 'Hotel Management System',
+            'branch_name' => null,
             'logo_url' => null,
         ]);
     }
@@ -58,6 +60,8 @@ class HotelSettingController extends Controller
             'sms_notifications_enabled' => ['nullable','boolean'],
             'whatsapp_notifications_enabled' => ['nullable','boolean'],
             'allow_checkin_outside_arrival_date' => ['nullable','boolean'],
+            // Meta template names are lowercase letters, digits and underscores only
+            'whatsapp_confirmation_template' => ['nullable','string','max:255','regex:/^[a-z0-9_]+$/'],
             'logo' => ['nullable','image','max:2048'],
             'stamp' => ['nullable','image','max:2048'],
             'header' => ['nullable','image','max:2048'],

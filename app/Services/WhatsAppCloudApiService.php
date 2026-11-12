@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\HotelSetting;
 use App\Models\Reservation;
 use App\Models\Room;
 use App\Models\WhatsAppNotificationNumber;
@@ -12,6 +13,9 @@ use Illuminate\Support\Facades\Log;
 
 class WhatsAppCloudApiService
 {
+    /** Used when hotel settings don't name a confirmation template. */
+    public const DEFAULT_CONFIRMATION_TEMPLATE = 'booking_confirmation_branch1';
+
     private string $baseUrl;
     private string $apiVersion;
     private ?string $phoneNumberId;
@@ -87,8 +91,11 @@ class WhatsAppCloudApiService
             "#{$reservation->id}",
         ];
 
-        $result = $this->sendTemplateMessage($customer->phone, 'booking_confirmation_branch1', 'ar', $bodyParams);
-        $extraResults = $this->notifyEventNumbers('confirmation', 'booking_confirmation_branch1', 'ar', $bodyParams);
+        // Each branch sets its own approved template in hotel settings
+        $templateName = HotelSetting::first()?->whatsapp_confirmation_template ?: self::DEFAULT_CONFIRMATION_TEMPLATE;
+
+        $result = $this->sendTemplateMessage($customer->phone, $templateName, 'ar', $bodyParams);
+        $extraResults = $this->notifyEventNumbers('confirmation', $templateName, 'ar', $bodyParams);
 
         $result['recipients'] = array_merge(
             [[
