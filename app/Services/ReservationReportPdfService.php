@@ -141,7 +141,7 @@ class ReservationReportPdfService
         $pdf->Cell($colCreatedBy, 9, 'سجل بواسطه', 1, 1, 'C', true);
 
         $statusLabels = [
-            'pending' => 'في الانتظار',
+            'pending' => 'حجز مبدئي',
             'confirmed' => 'مؤكد',
             'checked_in' => 'تم تسجيل الوصول',
             'checked_out' => 'تم تسجيل المغادرة',

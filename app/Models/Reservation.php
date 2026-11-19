@@ -16,6 +16,8 @@ use App\Models\Transaction;
  * @property string $check_out_date
  * @property string $currency
  * @property string $status
+ * @property int|null $key_cards_issued
+ * @property int|null $key_cards_returned
  * @property numeric $total_amount
  * @property numeric $paid_amount
  * @property \Illuminate\Support\Carbon|null $created_at
@@ -52,11 +54,15 @@ class Reservation extends Model
         'checkout_reminder_sent_at',
         'early_checkout_nights',
         'early_checkout_refund',
+        'key_cards_issued',
+        'key_cards_returned',
     ];
 
     protected $casts = [
         'checkout_reminder_sent_at' => 'datetime',
         'early_checkout_refund' => 'float',
+        'key_cards_issued' => 'integer',
+        'key_cards_returned' => 'integer',
     ];
 
     // Old rooms stay visible after a transfer, whichever endpoint returns the reservation

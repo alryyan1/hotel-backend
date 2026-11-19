@@ -46,6 +46,18 @@ class ReservationController extends Controller
     }
 
     /**
+     * Record a free-text event (e.g. key cards handed out/returned) for the reservation timeline.
+     */
+    private function logNote(Reservation $reservation, string $notes, ?int $userId): void
+    {
+        ReservationStatusLog::create([
+            'reservation_id' => $reservation->id,
+            'notes' => $notes,
+            'user_id' => $userId,
+        ]);
+    }
+
+    /**
      * Record a room transfer (old room -> new room) for the reservation timeline.
      */
     private function logRoomTransfer(Reservation $reservation, string $oldRoomNumber, string $newRoomNumber, string $fromDate, ?int $userId): void
@@ -517,6 +529,13 @@ class ReservationController extends Controller
             return response()->json(['message' => 'Reservation must be confirmed to check in'], 422);
         }
 
+        $data = $request->validate([
+            'key_cards_issued' => ['required', 'integer', 'min:1', 'max:20'],
+        ], [
+            'key_cards_issued.required' => 'يرجى إدخال عدد كروت الأبواب المسلّمة',
+            'key_cards_issued.min' => 'يجب تسليم كرت واحد على الأقل',
+        ]);
+
         // Unless enabled in hotel settings, check-in is only allowed on the arrival date
         $allowOtherDay = HotelSetting::first()->allow_checkin_outside_arrival_date ?? false;
         $checkInDateStr = $reservation->check_in_date instanceof \Carbon\Carbon
@@ -569,8 +588,13 @@ class ReservationController extends Controller
 
         // Update reservation status to checked_in
         $fromStatus = $reservation->status;
-        $reservation->update(['status' => 'checked_in']);
+        $reservation->update([
+            'status' => 'checked_in',
+            'key_cards_issued' => $data['key_cards_issued'],
+            'key_cards_returned' => null,
+        ]);
         $this->logStatusChange($reservation, $fromStatus, 'checked_in', $request->user()?->id);
+        $this->logNote($reservation, "تسليم كروت الأبواب: {$data['key_cards_issued']}", $request->user()?->id);
 
         return response()->json($reservation->fresh()->load(['customer', 'rooms', 'transactions']));
     }
@@ -580,6 +604,15 @@ class ReservationController extends Controller
         if ($reservation->status !== 'checked_in') {
             return response()->json(['message' => 'Reservation must be checked in to check out'], 422);
         }
+
+        // Reservations checked in before key cards were tracked have no issued count
+        $issuedCards = $reservation->key_cards_issued;
+        $data = $request->validate([
+            'key_cards_returned' => ['required', 'integer', 'min:0', 'max:' . ($issuedCards ?? 20)],
+        ], [
+            'key_cards_returned.required' => 'يرجى إدخال عدد كروت الأبواب المُرجعة',
+            'key_cards_returned.max' => 'عدد الكروت المُرجعة أكبر من عدد الكروت المسلّمة',
+        ]);
 
         $now   = now(); // Africa/Khartoum
         $today = $now->toDateString();
@@ -629,7 +662,7 @@ class ReservationController extends Controller
             }
         }
 
-        DB::transaction(function () use ($reservation, $newCheckOutDate, $isEarlyCheckout, $refundAmount, $remainingDays) {
+        DB::transaction(function () use ($reservation, $newCheckOutDate, $isEarlyCheckout, $refundAmount, $remainingDays, $data) {
             foreach ($reservation->rooms as $room) {
                 \App\Models\CleaningNotification::create([
                     'room_id' => $room->id,
@@ -640,7 +673,10 @@ class ReservationController extends Controller
                 ]);
             }
 
-            $updateData = ['status' => 'checked_out'];
+            $updateData = [
+                'status' => 'checked_out',
+                'key_cards_returned' => $data['key_cards_returned'],
+            ];
 
             if ($isEarlyCheckout) {
                 $updateData['check_out_date'] = $newCheckOutDate;
@@ -664,12 +700,47 @@ class ReservationController extends Controller
         });
 
         $this->logStatusChange($reservation, 'checked_in', 'checked_out', $request->user()?->id);
+        $cardsNote = $issuedCards !== null
+            ? "إرجاع كروت الأبواب: {$data['key_cards_returned']} من {$issuedCards}"
+            : "إرجاع كروت الأبواب: {$data['key_cards_returned']}";
+        $this->logNote($reservation, $cardsNote, $request->user()?->id);
 
         $whatsappEnabled = HotelSetting::first()->whatsapp_notifications_enabled ?? true;
         if ($whatsappEnabled) {
             foreach ($reservation->rooms as $room) {
                 $this->whatsappService->notifyCleaningCheckout($room);
             }
+        }
+
+        return response()->json($reservation->fresh()->load(['customer', 'rooms', 'transactions']));
+    }
+
+    /**
+     * Change the issued key card count during a stay (extra card handed out,
+     * or a card reported lost and replaced).
+     */
+    public function updateKeyCards(Request $request, Reservation $reservation)
+    {
+        if ($reservation->status !== 'checked_in') {
+            return response()->json(['message' => 'لا يمكن تعديل كروت الأبواب إلا للحجوزات المقيمة'], 422);
+        }
+
+        $data = $request->validate([
+            'key_cards_issued' => ['required', 'integer', 'min:1', 'max:20'],
+        ], [
+            'key_cards_issued.required' => 'يرجى إدخال عدد كروت الأبواب المسلّمة',
+            'key_cards_issued.min' => 'يجب تسليم كرت واحد على الأقل',
+        ]);
+
+        $oldCount = $reservation->key_cards_issued;
+        $reservation->update(['key_cards_issued' => $data['key_cards_issued']]);
+
+        if ($oldCount !== $data['key_cards_issued']) {
+            $this->logNote(
+                $reservation,
+                'تعديل كروت الأبواب: من ' . ($oldCount ?? '-') . " إلى {$data['key_cards_issued']}",
+                $request->user()?->id
+            );
         }
 
         return response()->json($reservation->fresh()->load(['customer', 'rooms', 'transactions']));
@@ -954,6 +1025,17 @@ class ReservationController extends Controller
     {
         $query = Reservation::with(['customer', 'rooms', 'transactions']);
 
+        // Daily report: only reservations created during one hotel day (12:00 → 11:59 next
+        // day, same window as the list's created_at_date filter). Defaults to the current
+        // hotel day — before noon that's still the day that started yesterday at 12:00.
+        $now = \Carbon\Carbon::now();
+        $reportDay = !empty($request->created_at_date)
+            ? \Carbon\Carbon::parse($request->created_at_date)->startOfDay()
+            : ($now->hour < 12 ? $now->copy()->subDay()->startOfDay() : $now->copy()->startOfDay());
+        $dayStart = $reportDay->copy()->setTime(12, 0, 0);
+        $dayEnd = $reportDay->copy()->addDay()->setTime(11, 59, 59);
+        $query->whereBetween('created_at', [$dayStart, $dayEnd]);
+
         // Apply the same filters as index method
         if ($request->has('search') && !empty($request->search)) {
             $searchTerm = $request->search;
@@ -1049,7 +1131,7 @@ class ReservationController extends Controller
         $hotelEmail = $hotelSettings?->email ?? '';
 
         // Set hotel name (centered, spanning multiple columns)
-        $sheet->mergeCells('C' . $currentRow . ':I' . $currentRow);
+        $sheet->mergeCells('C' . $currentRow . ':J' . $currentRow);
         $sheet->setCellValue('C' . $currentRow, $hotelName);
         $sheet->getStyle('C' . $currentRow)->applyFromArray([
             'font' => ['bold' => true, 'size' => 18, 'color' => ['rgb' => '1F4E78']],
@@ -1066,7 +1148,7 @@ class ReservationController extends Controller
         if ($hotelEmail) $details[] = 'البريد: ' . $hotelEmail;
 
         if (!empty($details)) {
-            $sheet->mergeCells('C' . $currentRow . ':I' . $currentRow);
+            $sheet->mergeCells('C' . $currentRow . ':J' . $currentRow);
             $sheet->setCellValue('C' . $currentRow, implode(' | ', $details));
             $sheet->getStyle('C' . $currentRow)->applyFromArray([
                 'font' => ['size' => 11, 'color' => ['rgb' => '666666']],
@@ -1077,8 +1159,8 @@ class ReservationController extends Controller
 
         // Report title
         $currentRow++;
-        $sheet->mergeCells('A' . $currentRow . ':I' . $currentRow);
-        $sheet->setCellValue('A' . $currentRow, 'تقرير الحجوزات');
+        $sheet->mergeCells('A' . $currentRow . ':J' . $currentRow);
+        $sheet->setCellValue('A' . $currentRow, 'تقرير الحجوزات اليومي');
         $sheet->getStyle('A' . $currentRow)->applyFromArray([
             'font' => ['bold' => true, 'size' => 16, 'color' => ['rgb' => '1F4E78']],
             'alignment' => ['horizontal' => Alignment::HORIZONTAL_CENTER, 'vertical' => Alignment::VERTICAL_CENTER],
@@ -1087,8 +1169,13 @@ class ReservationController extends Controller
         $currentRow++;
 
         // Report date
-        $sheet->mergeCells('A' . $currentRow . ':I' . $currentRow);
-        $sheet->setCellValue('A' . $currentRow, 'تاريخ التقرير: ' . date('Y-m-d H:i'));
+        $sheet->mergeCells('A' . $currentRow . ':J' . $currentRow);
+        $sheet->setCellValue(
+            'A' . $currentRow,
+            'يوم ' . $reportDay->format('Y-m-d')
+                . ' (من ' . $dayStart->format('Y-m-d H:i') . ' إلى ' . $dayEnd->format('Y-m-d H:i') . ')'
+                . ' — تاريخ الطباعة: ' . $now->format('Y-m-d H:i')
+        );
         $sheet->getStyle('A' . $currentRow)->applyFromArray([
             'font' => ['size' => 10, 'color' => ['rgb' => '666666']],
             'alignment' => ['horizontal' => Alignment::HORIZONTAL_CENTER, 'vertical' => Alignment::VERTICAL_CENTER],
@@ -1097,7 +1184,7 @@ class ReservationController extends Controller
         $currentRow++; // Empty row before table
 
         // Headers (removed: عدد الضيوف, الحالة, الملاحظات)
-        $headers = ['رقم الحجز', 'العميل', 'الهاتف', 'الغرف', 'تاريخ الوصول', 'تاريخ المغادرة', 'المبلغ الإجمالي', 'المبلغ المدفوع', 'المتبقي'];
+        $headers = ['رقم الحجز', 'العميل', 'الهاتف', 'الغرف', 'تاريخ الوصول', 'تاريخ المغادرة', 'العملة', 'المبلغ الإجمالي', 'المبلغ المدفوع', 'المتبقي'];
         $headerRow = $currentRow;
         $col = 'A';
 
@@ -1121,93 +1208,121 @@ class ReservationController extends Controller
         }
         $sheet->getRowDimension($headerRow)->setRowHeight(25);
 
-        // Data rows
+        $moneyFormat = '#,##0.00';
+
+        // Data rows — amounts come from the reservation's transactions, the same source as
+        // the customer ledger (كشف الحساب): debits (rooms, extensions, transfers, services)
+        // make the total, credits (payments) the paid amount. Kept per currency, since SDG
+        // and USD are never summed together; a reservation with both gets one row each.
         $row = $currentRow + 1;
-        $totalAmount = 0;
-        $totalPaid = 0;
-        $totalBalance = 0;
+        $totalsByCurrency = [];
 
         foreach ($reservations as $reservation) {
             $rooms = $reservation->rooms->map(function ($room) {
                 return 'غرفة ' . $room->number;
             })->implode(', ');
 
-            $totalAmountValue = $reservation->total_amount ?? 0;
-            $paidAmountValue = $reservation->paid_amount ?? 0;
-            $balanceValue = $totalAmountValue - $paidAmountValue;
-
-            $totalAmount += $totalAmountValue;
-            $totalPaid += $paidAmountValue;
-            $totalBalance += $balanceValue;
-
-            $sheet->setCellValue('A' . $row, $reservation->id);
-            $sheet->setCellValue('B' . $row, $reservation->customer->name ?? '');
-            $sheet->setCellValue('C' . $row, $reservation->customer->phone ?? '');
-            $sheet->setCellValue('D' . $row, $rooms);
-            $sheet->setCellValue('E' . $row, $reservation->check_in_date ? date('Y-m-d', strtotime($reservation->check_in_date)) : '');
-            $sheet->setCellValue('F' . $row, $reservation->check_out_date ? date('Y-m-d', strtotime($reservation->check_out_date)) : '');
-            $sheet->setCellValue('G' . $row, number_format($totalAmountValue, 2));
-            $sheet->setCellValue('H' . $row, number_format($paidAmountValue, 2));
-            $sheet->setCellValue('I' . $row, number_format($balanceValue, 2));
-
-            // Style data cells
-            $sheet->getStyle('A' . $row . ':I' . $row)->applyFromArray([
-                'borders' => [
-                    'allBorders' => [
-                        'borderStyle' => Border::BORDER_THIN,
-                        'color' => ['rgb' => 'CCCCCC'],
-                    ],
-                ],
-                'alignment' => ['horizontal' => Alignment::HORIZONTAL_RIGHT, 'vertical' => Alignment::VERTICAL_CENTER],
-            ]);
-
-            // Highlight balance if positive (amount due)
-            if ($balanceValue > 0) {
-                $sheet->getStyle('I' . $row)->applyFromArray([
-                    'font' => ['color' => ['rgb' => 'C00000'], 'bold' => true],
-                ]);
+            $byCurrency = [];
+            foreach ($reservation->transactions as $transaction) {
+                $currency = $transaction->currency ?? ($reservation->currency ?? 'SDG');
+                $byCurrency[$currency] ??= ['debit' => 0, 'credit' => 0];
+                $byCurrency[$currency][$transaction->type === 'debit' ? 'debit' : 'credit'] += (float) $transaction->amount;
+            }
+            if (empty($byCurrency)) {
+                $byCurrency[$reservation->currency ?? 'SDG'] = ['debit' => 0, 'credit' => 0];
             }
 
-            // Alternate row colors for better readability
-            if ($row % 2 == 0) {
-                $sheet->getStyle('A' . $row . ':I' . $row)->applyFromArray([
-                    'fill' => [
-                        'fillType' => Fill::FILL_SOLID,
-                        'startColor' => ['rgb' => 'F2F2F2']
-                    ],
-                ]);
-            }
+            foreach ($byCurrency as $currency => $amounts) {
+                $totalAmountValue = $amounts['debit'];
+                $paidAmountValue = $amounts['credit'];
+                $balanceValue = $totalAmountValue - $paidAmountValue;
 
-            $row++;
+                $totalsByCurrency[$currency] ??= ['debit' => 0, 'credit' => 0];
+                $totalsByCurrency[$currency]['debit'] += $totalAmountValue;
+                $totalsByCurrency[$currency]['credit'] += $paidAmountValue;
+
+                $sheet->setCellValue('A' . $row, $reservation->id);
+                $sheet->setCellValue('B' . $row, $reservation->customer->name ?? '');
+                $sheet->setCellValueExplicit('C' . $row, (string) ($reservation->customer->phone ?? ''), \PhpOffice\PhpSpreadsheet\Cell\DataType::TYPE_STRING);
+                $sheet->setCellValue('D' . $row, $rooms);
+                $sheet->setCellValue('E' . $row, $reservation->check_in_date ? date('Y-m-d', strtotime($reservation->check_in_date)) : '');
+                $sheet->setCellValue('F' . $row, $reservation->check_out_date ? date('Y-m-d', strtotime($reservation->check_out_date)) : '');
+                $sheet->setCellValue('G' . $row, $currency);
+                $sheet->setCellValue('H' . $row, $totalAmountValue);
+                $sheet->setCellValue('I' . $row, $paidAmountValue);
+                $sheet->setCellValue('J' . $row, $balanceValue);
+                $sheet->getStyle('H' . $row . ':J' . $row)->getNumberFormat()->setFormatCode($moneyFormat);
+
+                // Style data cells
+                $sheet->getStyle('A' . $row . ':J' . $row)->applyFromArray([
+                    'borders' => [
+                        'allBorders' => [
+                            'borderStyle' => Border::BORDER_THIN,
+                            'color' => ['rgb' => 'CCCCCC'],
+                        ],
+                    ],
+                    'alignment' => ['horizontal' => Alignment::HORIZONTAL_RIGHT, 'vertical' => Alignment::VERTICAL_CENTER],
+                ]);
+
+                // Highlight balance if positive (amount due)
+                if ($balanceValue > 0) {
+                    $sheet->getStyle('J' . $row)->applyFromArray([
+                        'font' => ['color' => ['rgb' => 'C00000'], 'bold' => true],
+                    ]);
+                }
+
+                // Alternate row colors for better readability
+                if ($row % 2 == 0) {
+                    $sheet->getStyle('A' . $row . ':J' . $row)->applyFromArray([
+                        'fill' => [
+                            'fillType' => Fill::FILL_SOLID,
+                            'startColor' => ['rgb' => 'F2F2F2']
+                        ],
+                    ]);
+                }
+
+                $row++;
+            }
         }
 
-        // Total row
-        $totalRow = $row;
-        $sheet->mergeCells('A' . $totalRow . ':F' . $totalRow);
-        $sheet->setCellValue('A' . $totalRow, 'الإجمالي');
-        $sheet->setCellValue('G' . $totalRow, number_format($totalAmount, 2));
-        $sheet->setCellValue('H' . $totalRow, number_format($totalPaid, 2));
-        $sheet->setCellValue('I' . $totalRow, number_format($totalBalance, 2));
+        if ($reservations->isEmpty()) {
+            $sheet->mergeCells('A' . $row . ':J' . $row);
+            $sheet->setCellValue('A' . $row, 'لا توجد حجوزات في هذا اليوم');
+            $sheet->getStyle('A' . $row)->applyFromArray([
+                'alignment' => ['horizontal' => Alignment::HORIZONTAL_CENTER, 'vertical' => Alignment::VERTICAL_CENTER],
+            ]);
+            $row++;
+            $totalsByCurrency['SDG'] = ['debit' => 0, 'credit' => 0];
+        }
 
-        $sheet->getStyle('A' . $totalRow . ':I' . $totalRow)->applyFromArray([
-            'font' => ['bold' => true, 'size' => 12, 'color' => ['rgb' => 'FFFFFF']],
-            'fill' => [
-                'fillType' => Fill::FILL_SOLID,
-                'startColor' => ['rgb' => '1F4E78']
-            ],
-            'alignment' => ['horizontal' => Alignment::HORIZONTAL_RIGHT, 'vertical' => Alignment::VERTICAL_CENTER],
-            'borders' => [
-                'allBorders' => [
-                    'borderStyle' => Border::BORDER_THICK,
-                    'color' => ['rgb' => '000000'],
+        // Total rows — one per currency
+        $totalRow = $row - 1;
+        foreach ($totalsByCurrency as $currency => $totals) {
+            $totalRow = $row;
+            $sheet->mergeCells('A' . $totalRow . ':F' . $totalRow);
+            $sheet->setCellValue('A' . $totalRow, 'الإجمالي');
+            $sheet->setCellValue('G' . $totalRow, $currency);
+            $sheet->setCellValue('H' . $totalRow, $totals['debit']);
+            $sheet->setCellValue('I' . $totalRow, $totals['credit']);
+            $sheet->setCellValue('J' . $totalRow, $totals['debit'] - $totals['credit']);
+            $sheet->getStyle('H' . $totalRow . ':J' . $totalRow)->getNumberFormat()->setFormatCode($moneyFormat);
+
+            $sheet->getStyle('A' . $totalRow . ':J' . $totalRow)->applyFromArray([
+                'font' => ['bold' => true, 'size' => 12, 'color' => ['rgb' => 'FFFFFF']],
+                'fill' => [
+                    'fillType' => Fill::FILL_SOLID,
+                    'startColor' => ['rgb' => '1F4E78']
                 ],
-            ],
-        ]);
-        $sheet->getRowDimension($totalRow)->setRowHeight(25);
-
-        // Auto-size columns
-        foreach (range('A', 'I') as $col) {
-            $sheet->getColumnDimension($col)->setAutoSize(true);
+                'alignment' => ['horizontal' => Alignment::HORIZONTAL_RIGHT, 'vertical' => Alignment::VERTICAL_CENTER],
+                'borders' => [
+                    'allBorders' => [
+                        'borderStyle' => Border::BORDER_THICK,
+                        'color' => ['rgb' => '000000'],
+                    ],
+                ],
+            ]);
+            $sheet->getRowDimension($totalRow)->setRowHeight(25);
+            $row++;
         }
 
         // Set column widths for better printing
@@ -1217,14 +1332,15 @@ class ReservationController extends Controller
         $sheet->getColumnDimension('D')->setWidth(25); // الغرف
         $sheet->getColumnDimension('E')->setWidth(15); // تاريخ الوصول
         $sheet->getColumnDimension('F')->setWidth(15); // تاريخ المغادرة
-        $sheet->getColumnDimension('G')->setWidth(15); // المبلغ الإجمالي
-        $sheet->getColumnDimension('H')->setWidth(15); // المبلغ المدفوع
-        $sheet->getColumnDimension('I')->setWidth(15); // المتبقي
+        $sheet->getColumnDimension('G')->setWidth(10); // العملة
+        $sheet->getColumnDimension('H')->setWidth(16); // المبلغ الإجمالي
+        $sheet->getColumnDimension('I')->setWidth(16); // المبلغ المدفوع
+        $sheet->getColumnDimension('J')->setWidth(16); // المتبقي
 
         // Set print area
-        $sheet->getPageSetup()->setPrintArea('A1:I' . $totalRow);
+        $sheet->getPageSetup()->setPrintArea('A1:J' . $totalRow);
 
-        $filename = 'reservations_export_' . date('Y-m-d_His') . '.xlsx';
+        $filename = 'reservations_' . $reportDay->format('Y-m-d') . '.xlsx';
 
         $writer = new Xlsx($spreadsheet);
 
