@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Room;
+use App\Models\RoomStatus;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Validation\ValidationException;
@@ -91,9 +92,22 @@ class RoomController extends Controller
                 'room_type_id' => 'required|exists:room_types,id',
                 'price_usd' => 'nullable|numeric|min:0',
                 'price_sdg' => 'required|numeric|min:0',
-                'room_status_id' => 'required|exists:room_statuses,id',
+                'room_status_id' => 'nullable|exists:room_statuses,id',
                 'beds' => 'required|integer|min:1|max:10',
             ]);
+
+            // The room form no longer asks for a status; new rooms start as "empty"
+            // and status changes go through updateStatus().
+            if (empty($validated['room_status_id'])) {
+                $defaultStatus = RoomStatus::where('code', 'empty')->first() ?? RoomStatus::first();
+                if (!$defaultStatus) {
+                    return response()->json([
+                        'message' => 'Validation failed',
+                        'errors' => ['room_status_id' => ['No room statuses are defined.']],
+                    ], 422);
+                }
+                $validated['room_status_id'] = $defaultStatus->id;
+            }
 
             $room = Room::create($validated);
             $room->load(['floor', 'type', 'status']);
@@ -128,7 +142,7 @@ class RoomController extends Controller
                 'room_type_id' => 'required|exists:room_types,id',
                 'price_usd' => 'nullable|numeric|min:0',
                 'price_sdg' => 'required|numeric|min:0',
-                'room_status_id' => 'required|exists:room_statuses,id',
+                'room_status_id' => 'sometimes|exists:room_statuses,id',
                 'beds' => 'required|integer|min:1|max:10',
             ]);
 
