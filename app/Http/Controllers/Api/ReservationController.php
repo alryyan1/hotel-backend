@@ -370,6 +370,14 @@ class ReservationController extends Controller
             }
         }
 
+        $cancelling = ($data['status'] ?? null) === 'cancelled' && $reservation->status !== 'cancelled';
+        if ($cancelling && $this->hasPayments($reservation)) {
+            return response()->json(['message' => 'لا يمكن إلغاء الحجز لوجود دفعات مسجلة عليه، قم بإلغاء الدفعات أولاً'], 422);
+        }
+        if ($cancelling) {
+            $this->deleteReservationCharges($reservation);
+        }
+
         $reservation->update($data);
 
         if (isset($data['rooms'])) {
@@ -746,13 +754,32 @@ class ReservationController extends Controller
         return response()->json($reservation->fresh()->load(['customer', 'rooms', 'transactions']));
     }
 
+    /** Whether any payment (credit transaction or legacy payment row) is recorded on the reservation. */
+    private function hasPayments(Reservation $reservation): bool
+    {
+        return $reservation->transactions()->where('type', 'credit')->exists()
+            || $reservation->payments()->exists();
+    }
+
+    /** Remove the reservation's charges (debit transactions) from the customer's statement. */
+    private function deleteReservationCharges(Reservation $reservation): void
+    {
+        $reservation->transactions()->where('type', 'debit')->delete();
+    }
+
     public function cancel(Request $request, Reservation $reservation)
     {
         if (in_array($reservation->status, ['checked_in', 'checked_out'])) {
             return response()->json(['message' => 'Cannot cancel after check-in'], 422);
         }
+        if ($this->hasPayments($reservation)) {
+            return response()->json(['message' => 'لا يمكن إلغاء الحجز لوجود دفعات مسجلة عليه، قم بإلغاء الدفعات أولاً'], 422);
+        }
         $fromStatus = $reservation->status;
-        $reservation->update(['status' => 'cancelled']);
+        DB::transaction(function () use ($reservation) {
+            $this->deleteReservationCharges($reservation);
+            $reservation->update(['status' => 'cancelled']);
+        });
         $this->logStatusChange($reservation, $fromStatus, 'cancelled', $request->user()?->id);
 
         $whatsappEnabled = HotelSetting::first()->whatsapp_notifications_enabled ?? true;
