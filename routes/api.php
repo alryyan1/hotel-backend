@@ -108,6 +108,12 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::delete('customers/{customer}/document', [\App\Http\Controllers\Api\CustomerController::class, 'deleteDocument']);
     Route::get('customers/{customer}/document', [\App\Http\Controllers\Api\CustomerController::class, 'downloadDocument']);
 
+    // Customer documents (multiple per customer)
+    Route::get('customers/{customer}/documents', [\App\Http\Controllers\Api\CustomerController::class, 'listDocuments']);
+    Route::post('customers/{customer}/documents', [\App\Http\Controllers\Api\CustomerController::class, 'storeDocuments']);
+    Route::get('customers/{customer}/documents/{document}/file', [\App\Http\Controllers\Api\CustomerController::class, 'showDocument']);
+    Route::delete('customers/{customer}/documents/{document}', [\App\Http\Controllers\Api\CustomerController::class, 'destroyDocument']);
+
     // Inventory Categories (must come before inventory routes to avoid route conflicts)
     Route::apiResource('inventory-categories', \App\Http\Controllers\Api\InventoryCategoryController::class);
     Route::get('inventory/categories', [\App\Http\Controllers\Api\InventoryCategoryController::class, 'index']);

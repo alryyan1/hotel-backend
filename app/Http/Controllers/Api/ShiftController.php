@@ -118,17 +118,33 @@ class ShiftController extends Controller
         ]);
     }
 
-    public function exportPdf(Request $request, Shift $shift): Response
+    /**
+     * Shift report PDF. Admins get the whole shift, or one user's report with ?user_id=;
+     * regular users always get their own report. A single-user report also lists that
+     * user's payments and paid services, so it can be reconciled on its own.
+     */
+    public function exportPdf(Request $request, Shift $shift): Response|JsonResponse
     {
         $user = $request->user();
         $shift->load(['opener:id,name', 'closer:id,name']);
-        $summary = $this->figuresFor($shift, $user);
-        $users = $user->is_admin ? $this->usersFor($shift) : [];
         $hotel = HotelSetting::first();
+
+        $reportUser = null; // null = whole shift
+        if (!$user->is_admin) {
+            $reportUser = $user;
+        } elseif ($request->filled('user_id')) {
+            $reportUser = User::find((int) $request->input('user_id'));
+            if (!$reportUser) {
+                return response()->json(['message' => 'المستخدم غير موجود'], 404);
+            }
+        }
+
+        $summary = $reportUser ? $this->figuresForUser($shift, $reportUser->id) : $this->figuresFor($shift, $user);
+        $users = !$reportUser ? $this->usersFor($shift) : [];
 
         $pdf = new \TCPDF('P', 'mm', 'A4', true, 'UTF-8', false);
         $pdf->SetCreator('Hotel Management System');
-        $pdf->SetTitle('تقرير الوردية #' . $shift->id);
+        $pdf->SetTitle('تقرير الوردية #' . $shift->id . ($reportUser ? ' — ' . $reportUser->name : ''));
         $pdf->setPrintHeader(false);
         $pdf->setPrintFooter(false);
         $pdf->SetMargins(12, 12, 12);
@@ -137,21 +153,110 @@ class ShiftController extends Controller
         $pdf->SetFont('arial', '', 10);
         $pdf->AddPage();
 
-        $html = $this->pdfHeader($shift, $user, $hotel?->official_name)
+        $html = $this->pdfHeader($shift, $reportUser, $hotel?->official_name)
             . $this->pdfTotals($summary)
             . $this->pdfMethodTable($summary)
             . ($users ? $this->pdfUsersTable($users) : '')
+            . ($reportUser ? $this->pdfUserOperations($shift, $reportUser->id) : '')
             . $this->pdfFooter($shift);
 
         $pdf->writeHTML($html, true, false, true, false, '');
 
-        return response($pdf->Output('shift_' . $shift->id . '.pdf', 'S'), 200)
-            ->header('Content-Type', 'application/pdf');
+        $filename = 'shift_' . $shift->id . ($reportUser ? '_user_' . $reportUser->id : '') . '.pdf';
+
+        return response($pdf->Output($filename, 'S'), 200)
+            ->header('Content-Type', 'application/pdf')
+            ->header('Content-Disposition', 'inline; filename="' . $filename . '"');
     }
 
+    /** One user's figures: the close-time snapshot for a closed shift, live otherwise. */
+    private function figuresForUser(Shift $shift, int $userId): array
+    {
+        if (!$shift->isOpen() && $shift->totals) {
+            $entry = collect($shift->totals['users'] ?? [])->firstWhere('user_id', $userId);
+            if ($entry) {
+                return $entry['summary'];
+            }
+        }
+
+        return $this->shifts->summary($shift, $userId);
+    }
+
+    /** The user's own payments and paid services during the shift, one row each. */
+    private function pdfUserOperations(Shift $shift, int $userId): string
+    {
+        $methodLabels = ['cash' => 'نقدي', 'bankak' => 'بنكك', 'Ocash' => 'أوكاش', 'fawri' => 'فوري'];
+        $unit = fn (?string $currency) => $currency === 'USD' ? '$' : 'ج.س';
+
+        $payments = Transaction::where('shift_id', $shift->id)
+            ->where('user_id', $userId)
+            ->where('type', 'credit')
+            ->with('customer:id,name')
+            ->orderBy('id')
+            ->get();
+
+        $paymentRows = $payments->map(fn (Transaction $t) => [
+            $t->created_at?->format('d/m H:i') ?? '-',
+            e($t->customer->name ?? '-'),
+            $t->reservation_id ? '#' . $t->reservation_id : '-',
+            $methodLabels[$t->method] ?? e($t->method ?? '-'),
+            '<b>' . $this->money($t->amount) . '</b> ' . $unit($t->currency),
+        ])->all();
+
+        $services = ReservationService::where('shift_id', $shift->id)
+            ->where('user_id', $userId)
+            ->whereNotNull('paid_at')
+            ->with(['service', 'room', 'reservation.customer:id,name'])
+            ->orderBy('id')
+            ->get();
+
+        $serviceRows = $services->map(fn (ReservationService $s) => [
+            $s->paid_at?->format('d/m H:i') ?? '-',
+            e($s->service->name ?? '-') . ($s->quantity > 1 ? ' × ' . $s->quantity : ''),
+            e($s->reservation->customer->name ?? '-') . ($s->room ? ' — غرفة ' . e($s->room->number) : ''),
+            $methodLabels[$s->payment_method] ?? e($s->payment_method ?? 'نقدي'),
+            '<b>' . $this->money($s->billed_amount) . '</b> ' . $unit($s->currency),
+        ])->all();
+
+        // Totals per currency — SDG and USD are never summed together
+        $totalsLine = function ($items, callable $amount) use ($unit): string {
+            $byCurrency = [];
+            foreach ($items as $item) {
+                $cur = $item->currency === 'USD' ? 'USD' : 'SDG';
+                $byCurrency[$cur] = ($byCurrency[$cur] ?? 0) + (float) $amount($item);
+            }
+            ksort($byCurrency);
+
+            return implode('<br />', array_map(fn ($cur, $sum) => '<b>' . $this->money($sum) . '</b> ' . $unit($cur), array_keys($byCurrency), $byCurrency)) ?: '0';
+        };
+
+        $html = $this->pdfSection('مدفوعات الحجوزات (' . count($paymentRows) . ')')
+            . $this->pdfTable(
+                ['الوقت' => 12, 'العميل' => 36, 'الحجز' => 14, 'الطريقة' => 14, 'المبلغ' => 24],
+                $paymentRows,
+                ['الإجمالي', '', '', '', $totalsLine($payments, fn ($t) => $t->amount)],
+                'لا توجد مدفوعات'
+            );
+
+        if ($serviceRows) {
+            $html .= $this->pdfSection('الخدمات المدفوعة (' . count($serviceRows) . ')')
+                . $this->pdfTable(
+                    ['الوقت' => 12, 'الخدمة' => 26, 'العميل / الغرفة' => 24, 'الطريقة' => 14, 'المبلغ' => 24],
+                    $serviceRows,
+                    ['الإجمالي', '', '', '', $totalsLine($services, fn ($s) => $s->billed_amount)],
+                );
+        }
+
+        return $html;
+    }
+
+    /**
+     * Any user may close the open shift, not only the one who opened it (e.g. at a
+     * handover). Who closed it is recorded in closed_by / closed_at by ShiftService::close.
+     */
     private function canClose(Shift $shift, User $user): bool
     {
-        return $shift->isOpen() && (int) $shift->opened_by === (int) $user->id;
+        return $shift->isOpen();
     }
 
     /**
@@ -247,7 +352,8 @@ class ShiftController extends Controller
         return $html . '</table>';
     }
 
-    private function pdfHeader(Shift $shift, User $user, ?string $hotelName): string
+    /** $reportUser: whose report this is, or null for the whole shift. */
+    private function pdfHeader(Shift $shift, ?User $reportUser, ?string $hotelName): string
     {
         $status = $shift->isOpen() ? 'مفتوحة' : 'مغلقة';
         $closed = $shift->closed_at
@@ -258,13 +364,14 @@ class ShiftController extends Controller
         $html = '<table cellpadding="8"><tr><td align="center" style="background-color:' . self::PDF_HEAD_BG . ';color:#ffffff;">'
             . ($hotelName ? '<span style="font-size:11pt;">' . e($hotelName) . '</span><br />' : '')
             . '<span style="font-size:17pt;font-weight:bold;">تقرير الوردية #' . $shift->id . '</span>'
+            . ($reportUser ? '<br /><span style="font-size:12pt;">تقرير المستخدم: ' . e($reportUser->name) . '</span>' : '')
             . '</td></tr></table><br /><br />';
 
         $html .= '<table cellpadding="5" style="border:0.5px solid ' . self::PDF_BORDER . ';background-color:' . self::PDF_SOFT_BG . ';">'
             . '<tr><td width="50%"><span ' . $label . '>الفتح:</span> ' . e($shift->opener->name ?? '-') . ' — ' . $shift->opened_at?->format('Y-m-d H:i') . '</td>'
             . '<td width="50%"><span ' . $label . '>الإغلاق:</span> ' . $closed . '</td></tr>'
             . '<tr><td width="50%"><span ' . $label . '>الحالة:</span> ' . $status . '</td>'
-            . '<td width="50%">' . ($user->is_admin ? '' : '<span ' . $label . '>المستخدم:</span> ' . e($user->name)) . '</td></tr>';
+            . '<td width="50%">' . ($reportUser ? '<span ' . $label . '>المستخدم:</span> ' . e($reportUser->name) : '<span ' . $label . '>النطاق:</span> كل المستخدمين') . '</td></tr>';
 
         return $html . '</table>';
     }
@@ -275,7 +382,7 @@ class ShiftController extends Controller
     private function pdfCurrencyBox(string $title, string $unit, float $reservations, float $services): string
     {
         $row = fn (string $label, float $value) => '<tr><td width="55%" style="color:#555555;border-bottom:0.5px solid ' . self::PDF_BORDER . ';">' . $label
-            . '</td><td width="45%" align="left" style="border-bottom:0.5px solid ' . self::PDF_BORDER . ';">' . $this->money($value) . ' ' . $unit . '</td></tr>';
+            . '</td><td width="45%" align="left" style="border-bottom:0.5px solid ' . self::PDF_BORDER . ';">' . $this->moneyLtr($value) . ' ' . $unit . '</td></tr>';
 
         return '<table cellpadding="6" style="border:0.5px solid ' . self::PDF_BORDER . ';">'
             . '<tr><td width="100%" style="background-color:' . self::PDF_HEAD_BG . ';color:#ffffff;font-weight:bold;font-size:11pt;">' . e($title) . '</td></tr>'
@@ -283,7 +390,7 @@ class ShiftController extends Controller
             . $row('إيرادات الخدمات', $services)
             . '<tr><td width="55%" style="background-color:' . self::PDF_SOFT_BG . ';font-weight:bold;">الإجمالي</td>'
             . '<td width="45%" align="left" style="background-color:' . self::PDF_SOFT_BG . ';font-weight:bold;font-size:13pt;color:' . self::PDF_HEAD_BG . ';">'
-            . $this->money($reservations + $services) . ' ' . $unit . '</td></tr></table>';
+            . $this->moneyLtr($reservations + $services) . ' ' . $unit . '</td></tr></table>';
     }
 
     /**
@@ -415,6 +522,15 @@ class ShiftController extends Controller
     private function usdOf(array $summary): float
     {
         return (float) ($summary['total_revenue_usd_cash'] ?? 0) + (float) ($summary['total_service_revenue_usd'] ?? 0);
+    }
+
+    /**
+     * A number next to Arabic text: TCPDF's bidi otherwise reverses its digit groups
+     * (2,000,000 printed as 000,000,2), so mark it explicitly left-to-right.
+     */
+    private function moneyLtr($value): string
+    {
+        return '<span dir="ltr">' . $this->money($value) . '</span>';
     }
 
     private function money($value): string

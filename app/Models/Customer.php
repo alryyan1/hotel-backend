@@ -71,6 +71,11 @@ class Customer extends Model
         return $this->hasMany(Transaction::class);
     }
 
+    public function documents(): HasMany
+    {
+        return $this->hasMany(CustomerDocument::class)->latest();
+    }
+
     /**
      * Get the document URL attribute.
      */

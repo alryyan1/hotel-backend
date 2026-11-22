@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Customer;
+use App\Models\CustomerDocument;
 use App\Models\RoomType;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
@@ -27,6 +28,8 @@ class CustomerController extends Controller
 
         // Per-currency totals for the customers list — SDG and USD are never summed
         // together (same as the ledger). A transaction without a currency counts as SDG.
+        $query->withCount('documents');
+
         foreach (['SDG', 'USD'] as $currency) {
             $suffix = strtolower($currency);
             foreach (['debit', 'credit'] as $type) {
@@ -152,6 +155,11 @@ class CustomerController extends Controller
             Storage::disk('public')->delete($customer->document_path);
         }
 
+        // Rows go with the customer via cascade; the files on disk need removing here
+        foreach ($customer->documents()->pluck('path') as $path) {
+            Storage::disk('public')->delete($path);
+        }
+
         $customer->forceDelete();
         return response()->json(['message' => 'Permanently deleted']);
     }
@@ -212,6 +220,68 @@ class CustomerController extends Controller
         }
 
         return Storage::disk('public')->download($customer->document_path);
+    }
+
+    /** All documents uploaded for a customer, newest first. */
+    public function listDocuments(Customer $customer): JsonResponse
+    {
+        return response()->json(
+            $customer->documents()->with('uploader:id,name')->get()
+        );
+    }
+
+    /** Upload one or more documents (field: documents[]). */
+    public function storeDocuments(Request $request, Customer $customer): JsonResponse
+    {
+        $request->validate([
+            'documents'   => 'required|array|min:1|max:20',
+            'documents.*' => 'file|mimes:pdf,jpg,jpeg,png,webp,doc,docx|max:10240', // 10MB each
+        ], [], [
+            'documents'   => 'المستندات',
+            'documents.*' => 'المستند',
+        ]);
+
+        $created = [];
+        foreach ($request->file('documents') as $file) {
+            $path = $file->store('documents/customers/' . $customer->id, 'public');
+            $created[] = $customer->documents()->create([
+                'path'          => $path,
+                'original_name' => $file->getClientOriginalName(),
+                'mime_type'     => $file->getClientMimeType(),
+                'size'          => $file->getSize(),
+                'uploaded_by'   => $request->user()?->id,
+            ]);
+        }
+
+        return response()->json($created, 201);
+    }
+
+    /** Stream a document inline (for preview) — served through the API so it stays behind auth. */
+    public function showDocument(Customer $customer, CustomerDocument $document): StreamedResponse|JsonResponse
+    {
+        if ($document->customer_id !== $customer->id || !Storage::disk('public')->exists($document->path)) {
+            return response()->json(['message' => 'المستند غير موجود'], 404);
+        }
+
+        return Storage::disk('public')->response($document->path, $document->original_name, [
+            'Content-Type' => $document->mime_type ?: 'application/octet-stream',
+        ], 'inline');
+    }
+
+    public function destroyDocument(Customer $customer, CustomerDocument $document): JsonResponse
+    {
+        if ($document->customer_id !== $customer->id) {
+            return response()->json(['message' => 'المستند غير موجود'], 404);
+        }
+
+        Storage::disk('public')->delete($document->path);
+        // Keep the legacy single-document column in sync if this was that file
+        if ($customer->document_path === $document->path) {
+            $customer->update(['document_path' => null]);
+        }
+        $document->delete();
+
+        return response()->json(['message' => 'Deleted']);
     }
 
     public function getBalance(Customer $customer): JsonResponse
