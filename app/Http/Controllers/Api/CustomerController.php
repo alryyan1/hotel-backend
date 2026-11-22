@@ -25,6 +25,20 @@ class CustomerController extends Controller
                 $query->where('type', 'credit');
             }], 'amount');
 
+        // Per-currency totals for the customers list — SDG and USD are never summed
+        // together (same as the ledger). A transaction without a currency counts as SDG.
+        foreach (['SDG', 'USD'] as $currency) {
+            $suffix = strtolower($currency);
+            foreach (['debit', 'credit'] as $type) {
+                $query->withSum(["transactions as total_{$type}_{$suffix}" => function ($q) use ($type, $currency) {
+                    $q->where('type', $type);
+                    $currency === 'SDG'
+                        ? $q->where(fn ($c) => $c->where('currency', 'SDG')->orWhereNull('currency'))
+                        : $q->where('currency', $currency);
+                }], 'amount');
+            }
+        }
+
         // Search functionality
         if ($request->has('search') && $request->get('search')) {
             $search = $request->get('search');
