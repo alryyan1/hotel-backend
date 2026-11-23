@@ -4,12 +4,15 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\SoftDeletes;
 use App\Models\ReservationService;
 use App\Models\Concerns\BelongsToShift;
 
 class Transaction extends Model
 {
-    use BelongsToShift;
+    // Soft deletes are only used when the customer is soft-deleted (see CustomerController).
+    // Every other removal (cancelling a payment/charge) is permanent: use forceDelete().
+    use BelongsToShift, SoftDeletes;
 
     protected $fillable = [
         'customer_id',
@@ -48,7 +51,7 @@ class Transaction extends Model
 
     public function customer(): BelongsTo
     {
-        return $this->belongsTo(Customer::class);
+        return $this->belongsTo(Customer::class)->withTrashed();
     }
 
     public function reservation(): BelongsTo

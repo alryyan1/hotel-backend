@@ -70,7 +70,8 @@ class Reservation extends Model
 
     public function customer(): BelongsTo
     {
-        return $this->belongsTo(Customer::class);
+        // Past reservations of a deleted customer still show the customer's name.
+        return $this->belongsTo(Customer::class)->withTrashed();
     }
 
     public function statusLogs(): HasMany

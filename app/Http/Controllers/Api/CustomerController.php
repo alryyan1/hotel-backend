@@ -6,6 +6,8 @@ use App\Http\Controllers\Controller;
 use App\Models\Customer;
 use App\Models\CustomerDocument;
 use App\Models\RoomType;
+use App\Models\Transaction;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Response;
@@ -115,15 +117,32 @@ class CustomerController extends Controller
         }
     }
 
+    /**
+     * Soft delete: the customer and their statement entries are hidden together
+     * (stamped with the same deleted_at) and come back together on restore().
+     */
     public function destroy(Customer $customer): JsonResponse
     {
-        $customer->delete();
-        return response()->json(['message' => 'Deleted']);
+        $hasActiveReservations = $customer->reservations()
+            ->whereIn('status', ['pending', 'confirmed', 'checked_in'])
+            ->exists();
+        if ($hasActiveReservations) {
+            return response()->json(['message' => 'لا يمكن حذف العميل لوجود حجوزات نشطة له، قم بإلغائها أو تسجيل المغادرة أولاً'], 422);
+        }
+
+        DB::transaction(function () use ($customer) {
+            $deletedAt = now();
+            $customer->transactions()->update(['deleted_at' => $deletedAt]);
+            $customer->deleted_at = $deletedAt;
+            $customer->save();
+        });
+
+        return response()->json(['message' => 'تم حذف العميل']);
     }
 
     public function trashed(Request $request): JsonResponse
     {
-        $query = Customer::onlyTrashed();
+        $query = Customer::onlyTrashed()->withCount('reservations');
 
         if ($request->has('search') && $request->get('search')) {
             $search = $request->get('search');
@@ -143,24 +162,59 @@ class CustomerController extends Controller
     public function restore(int $id): JsonResponse
     {
         $customer = Customer::onlyTrashed()->findOrFail($id);
-        $customer->restore();
-        return response()->json(['message' => 'Restored', 'customer' => $customer]);
+
+        DB::transaction(function () use ($customer) {
+            // Only the entries hidden by this customer's deletion (same timestamp).
+            Transaction::onlyTrashed()
+                ->where('customer_id', $customer->id)
+                ->where('deleted_at', $customer->deleted_at)
+                ->restore();
+            $customer->restore();
+        });
+
+        return response()->json(['message' => 'تم استرجاع العميل', 'customer' => $customer]);
     }
 
     public function forceDestroy(int $id): JsonResponse
     {
         $customer = Customer::onlyTrashed()->findOrFail($id);
 
-        if ($customer->document_path && Storage::disk('public')->exists($customer->document_path)) {
-            Storage::disk('public')->delete($customer->document_path);
+        $hasActiveReservations = $customer->reservations()
+            ->whereIn('status', ['pending', 'confirmed', 'checked_in'])
+            ->exists();
+        if ($hasActiveReservations) {
+            return response()->json(['message' => 'لا يمكن الحذف النهائي لعميل لديه حجوزات نشطة'], 422);
         }
 
-        // Rows go with the customer via cascade; the files on disk need removing here
-        foreach ($customer->documents()->pluck('path') as $path) {
+        $documentPaths = $customer->documents()->pluck('path');
+        $legacyDocument = $customer->document_path;
+
+        // Permanent delete takes the customer's past reservations and every statement entry with it.
+        DB::transaction(function () use ($customer) {
+            $reservationIds = $customer->reservations()->pluck('id');
+            $serviceIds = \App\Models\ReservationService::whereIn('reservation_id', $reservationIds)->pluck('id');
+
+            Transaction::withTrashed()
+                ->where(fn ($q) => $q->where('customer_id', $customer->id)
+                    ->orWhereIn('reservation_id', $reservationIds)
+                    ->orWhereIn('reservation_service_id', $serviceIds))
+                ->forceDelete();
+            \App\Models\Payment::where('customer_id', $customer->id)
+                ->orWhereIn('reservation_id', $reservationIds)
+                ->delete();
+            // Rooms pivot, service requests and status logs cascade with each reservation.
+            \App\Models\Reservation::whereIn('id', $reservationIds)->delete();
+            // Document rows go with the customer via cascade
+            $customer->forceDelete();
+        });
+
+        // Files on disk are removed only after the database delete succeeded
+        if ($legacyDocument && Storage::disk('public')->exists($legacyDocument)) {
+            Storage::disk('public')->delete($legacyDocument);
+        }
+        foreach ($documentPaths as $path) {
             Storage::disk('public')->delete($path);
         }
-
-        $customer->forceDelete();
         return response()->json(['message' => 'Permanently deleted']);
     }
 

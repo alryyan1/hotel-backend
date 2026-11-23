@@ -195,7 +195,7 @@ class TransactionController extends Controller
             }
         }
 
-        $transaction->delete();
+        $transaction->forceDelete();
 
         return response()->json(['message' => 'تم إلغاء السداد']);
     }

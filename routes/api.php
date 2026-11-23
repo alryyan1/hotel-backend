@@ -62,7 +62,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('reservations/{reservation}/check-out', [\App\Http\Controllers\Api\ReservationController::class, 'checkOut'])->middleware('shift.open');
     Route::patch('reservations/{reservation}/key-cards', [\App\Http\Controllers\Api\ReservationController::class, 'updateKeyCards']);
     Route::post('reservations/{reservation}/cancel',[\App\Http\Controllers\Api\ReservationController::class, 'cancel']);
-    Route::post('reservations/{reservation}/extend', [\App\Http\Controllers\Api\ReservationController::class, 'extend'])->middleware('shift.open');
+    Route::post('reservations/{reservation}/change-dates', [\App\Http\Controllers\Api\ReservationController::class, 'changeDates'])->middleware('shift.open');
+    Route::post('reservations/{reservation}/extend',[\App\Http\Controllers\Api\ReservationController::class, 'extend'])->middleware('shift.open');
     Route::post('reservations/{reservation}/transfer-room', [\App\Http\Controllers\Api\ReservationController::class, 'transferRoom'])->middleware('shift.open');
     Route::get('reservations/export/excel', [\App\Http\Controllers\Api\ReservationController::class, 'exportExcel']);
     Route::get('reports/daily/excel', [AppHttpControllersApiDailyReportController::class, 'export']);

@@ -408,12 +408,27 @@ class ReservationController extends Controller
      */
     public function destroy(Reservation $reservation)
     {
+        if ($reservation->status === 'checked_in') {
+            return response()->json(['message' => 'لا يمكن حذف حجز مسجل الوصول، قم بتسجيل المغادرة أولاً'], 422);
+        }
+        // Payments are real money received — they must be cancelled explicitly, not silently wiped.
+        if ($this->hasPayments($reservation)) {
+            return response()->json(['message' => 'لا يمكن حذف الحجز لوجود دفعات مسجلة عليه، قم بإلغاء الدفعات أولاً'], 422);
+        }
+
         DB::transaction(function () use ($reservation) {
-            Transaction::where('reservation_id', $reservation->id)->delete();
-            \App\Models\Payment::where('reservation_id', $reservation->id)->delete();
+            // Remove every charge this reservation put on the customer's statement:
+            // room nights, extensions, transfers and any legacy service charges.
+            $serviceIds = $reservation->services()->pluck('id');
+            Transaction::withTrashed()
+                ->where(fn ($q) => $q->where('reservation_id', $reservation->id)
+                    ->orWhereIn('reservation_service_id', $serviceIds))
+                ->forceDelete();
+            // Pivot rows, service requests and status logs cascade with the reservation.
             $reservation->delete();
         });
-        return response()->json(['message' => 'Deleted']);
+
+        return response()->json(['message' => 'تم حذف الحجز']);
     }
 
     public function confirm(Request $request, Reservation $reservation)
@@ -764,7 +779,7 @@ class ReservationController extends Controller
     /** Remove the reservation's charges (debit transactions) from the customer's statement. */
     private function deleteReservationCharges(Reservation $reservation): void
     {
-        $reservation->transactions()->where('type', 'debit')->delete();
+        $reservation->transactions()->where('type', 'debit')->forceDelete();
     }
 
     public function cancel(Request $request, Reservation $reservation)
@@ -791,6 +806,126 @@ class ReservationController extends Controller
         $responseData->whatsapp_result = $whatsappResult;
 
         return response()->json($responseData);
+    }
+
+    /**
+     * Change the arrival/departure dates of a reservation that hasn't checked in yet,
+     * re-pricing the stay at each room's frozen booking rate.
+     */
+    public function changeDates(Request $request, Reservation $reservation)
+    {
+        if (!in_array($reservation->status, ['pending', 'confirmed'])) {
+            return response()->json(['message' => 'لا يمكن تعديل تواريخ الحجز بعد تسجيل الوصول'], 422);
+        }
+
+        $data = $request->validate([
+            'check_in_date' => ['required', 'date'],
+            'check_out_date' => ['required', 'date', 'after:check_in_date'],
+        ]);
+
+        $checkIn = \Carbon\Carbon::parse($data['check_in_date'])->toDateString();
+        $checkOut = \Carbon\Carbon::parse($data['check_out_date'])->toDateString();
+        $nights = max(1, (int) \Carbon\Carbon::parse($checkIn)->diffInDays(\Carbon\Carbon::parse($checkOut)));
+
+        $reservation->load('rooms');
+        foreach ($reservation->rooms as $room) {
+            $overlap = Reservation::query()
+                ->where('id', '<>', $reservation->id)
+                ->whereNotIn('status', ['cancelled', 'checked_out'])
+                ->whereHas('occupyingRooms', function ($q) use ($room, $checkIn, $checkOut) {
+                    $q->where('rooms.id', $room->id)
+                        ->where(function ($p) use ($checkIn, $checkOut) {
+                            $p->where(function ($x) use ($checkIn, $checkOut) {
+                                $x->where('reservation_room.check_in_date', '<', $checkOut)
+                                    ->where('reservation_room.check_out_date', '>', $checkIn);
+                            })->orWhere(function ($x) use ($checkIn, $checkOut) {
+                                $x->whereNull('reservation_room.check_in_date')
+                                    ->whereNull('reservation_room.check_out_date')
+                                    ->where('reservations.check_in_date', '<', $checkOut)
+                                    ->where('reservations.check_out_date', '>', $checkIn);
+                            });
+                        });
+                })
+                ->exists();
+
+            if ($overlap) {
+                return response()->json([
+                    'message' => "الغرفة {$room->number} غير متاحة في الفترة المحددة",
+                    'room_id' => $room->id,
+                ], 422);
+            }
+        }
+
+        $oldCheckIn = \Carbon\Carbon::parse($reservation->check_in_date)->toDateString();
+        $oldCheckOut = \Carbon\Carbon::parse($reservation->check_out_date)->toDateString();
+
+        DB::transaction(function () use ($reservation, $checkIn, $checkOut, $nights) {
+            $total = 0;
+
+            foreach ($reservation->rooms as $room) {
+                // Keep the price frozen at booking time; fall back to the live price if missing.
+                $rate = $room->pivot->rate !== null
+                    ? (float) $room->pivot->rate
+                    : (float) $room->priceFor($reservation->currency);
+                $amount = $nights * $rate;
+                $total += $amount;
+
+                $reservation->rooms()->updateExistingPivot($room->id, [
+                    'check_in_date' => $checkIn,
+                    'check_out_date' => $checkOut,
+                ]);
+
+                // Replace the room's stay charges (booking + any extensions) with one re-priced charge.
+                $reservation->transactions()
+                    ->where('type', 'debit')
+                    ->where('room_id', $room->id)
+                    ->where('reference', 'like', 'EXT-%')
+                    ->forceDelete();
+
+                $values = [
+                    'customer_id' => $reservation->customer_id,
+                    'type' => 'debit',
+                    'amount' => $amount,
+                    'rate' => $rate,
+                    'nights' => $nights,
+                    'check_in_date' => $checkIn,
+                    'check_out_date' => $checkOut,
+                    'currency' => $reservation->currency,
+                    'transaction_date' => $checkIn,
+                    'notes' => 'غرفة ' . $room->number,
+                ];
+
+                $booking = $reservation->transactions()
+                    ->where('type', 'debit')
+                    ->where('room_id', $room->id)
+                    ->where('reference', 'RES-' . $reservation->id . '-ROOM-' . $room->id)
+                    ->first();
+
+                if ($booking) {
+                    $booking->update($values);
+                } else {
+                    Transaction::create($values + [
+                        'reservation_id' => $reservation->id,
+                        'room_id' => $room->id,
+                        'reference' => 'RES-' . $reservation->id . '-ROOM-' . $room->id,
+                    ]);
+                }
+            }
+
+            $reservation->update([
+                'check_in_date' => $checkIn,
+                'check_out_date' => $checkOut,
+                'total_amount' => $total,
+            ]);
+        });
+
+        $this->logNote(
+            $reservation,
+            "تعديل تواريخ الحجز: من {$oldCheckIn} - {$oldCheckOut} إلى {$checkIn} - {$checkOut}",
+            $request->user()?->id
+        );
+
+        return response()->json($reservation->fresh()->load(['customer', 'rooms.type', 'transactions']));
     }
 
     public function extend(Request $request, Reservation $reservation)

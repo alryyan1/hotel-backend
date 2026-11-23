@@ -128,7 +128,7 @@ class ReservationServiceController extends Controller
     {
         // Delete linked debit transaction before deleting the service
         $reservationService->load('transaction');
-        $reservationService->transaction?->delete();
+        $reservationService->transaction?->forceDelete();
 
         $reservationService->delete();
         return response()->json(null, 204);
